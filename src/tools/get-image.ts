@@ -1,14 +1,21 @@
 import type { ComfyUIClient } from '../comfyui/client.js';
 import type { ImageData } from '../comfyui/types.js';
+import type { RequestHistoryEntry } from './get-request-history.js';
 import { GetImageInputSchema, validateFilename } from '../utils/validation.js';
 
 export interface GetImageOutput {
   status: 'completed' | 'executing' | 'pending' | 'not_found';
   images?: ImageData[];
+  queue_position?: number;
+  queue_size?: number;
   error?: string;
 }
 
-export async function getImage(input: unknown, client: ComfyUIClient): Promise<GetImageOutput> {
+export async function getImage(
+  input: unknown,
+  client: ComfyUIClient,
+  requestHistory?: RequestHistoryEntry[]
+): Promise<GetImageOutput> {
   // Validate input
   const validatedInput = GetImageInputSchema.parse(input);
   const promptId = validatedInput.prompt_id;
@@ -17,8 +24,49 @@ export async function getImage(input: unknown, client: ComfyUIClient): Promise<G
     // Fetch history for this prompt
     const history = await client.getHistory(promptId);
 
-    // Check if prompt exists
+    // Check if prompt exists in ComfyUI history
     if (!history[promptId]) {
+      // Check queue status for pending items
+      try {
+        const queueStatus = await client.getQueue();
+        const allQueueItems = [...queueStatus.queue_running, ...queueStatus.queue_pending];
+        const queueItem = allQueueItems.find((item) => item.prompt_id === promptId);
+
+        if (queueItem) {
+          // Find position in pending queue (0-indexed in pending, but we want 1-indexed for user)
+          const pendingPosition = queueStatus.queue_pending.findIndex(
+            (item) => item.prompt_id === promptId
+          );
+
+          if (pendingPosition >= 0) {
+            // In pending queue
+            return {
+              status: 'pending',
+              queue_position: pendingPosition + 1,
+              queue_size: queueStatus.queue_pending.length,
+            };
+          } else {
+            // In running queue
+            return {
+              status: 'executing',
+            };
+          }
+        }
+      } catch (queueError) {
+        // If queue check fails, fall back to checking our history
+        console.error('Failed to check queue status:', queueError);
+      }
+
+      // Check if it exists in our request history (fallback)
+      if (requestHistory) {
+        const existsInOurHistory = requestHistory.some((entry) => entry.prompt_id === promptId);
+        if (existsInOurHistory) {
+          return {
+            status: 'pending',
+          };
+        }
+      }
+
       return {
         status: 'not_found',
         error: `Prompt ID ${promptId} not found`,

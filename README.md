@@ -4,10 +4,11 @@ A Model Context Protocol (MCP) server that enables AI assistants to generate ima
 
 ## Overview
 
-This MCP server exposes three primary tools:
-- **`generate_image`**: Queue an image generation task with ComfyUI using a text prompt and optional parameters
+This MCP server exposes four primary tools:
+- **`generate_image`**: Queue an image generation task with ComfyUI using a text prompt and optional workflow selection
 - **`get_image`**: Retrieve generated images by their prompt ID
-- **`get_request_history`**: View history of all image generation requests with current status
+- **`get_request_history`**: View history of all image generation requests with current status and workflow used
+- **`list_workflows`**: List all available workflow files in your workspace directory
 
 The server communicates with a local ComfyUI instance via its REST API and WebSocket interface, handling workflow execution, queue management, and image retrieval.
 
@@ -30,18 +31,20 @@ graph TB
 
 **How it works:**
 1. Your AI assistant (Claude Desktop, Cline, etc.) sends image generation requests via MCP
-2. This server loads your workflow, injects parameters, and queues it to ComfyUI
-3. Each request is stored in memory with prompt details, dimensions, and timestamp
+2. This server loads your selected workflow (or default), injects parameters, and queues it to ComfyUI
+3. Each request is stored in memory with prompt details, dimensions, workflow name, and timestamp
 4. ComfyUI generates the image using your local GPU/models
 5. The server retrieves and returns the image to your AI assistant
 6. View request history anytime to recover lost prompt IDs or review past generations
 
 ## Features
 
-- 🎨 **User-Defined Workflows**: Use your own ComfyUI workflows exported as JSON
+- 🎨 **Multiple Workflows**: Store and switch between multiple ComfyUI workflows at runtime
+- 🗂️ **Workflow Management**: List available workflows and select which one to use for each generation
 - 🔄 **Asynchronous Execution**: Queue workflows and retrieve results when ready
 - 🖼️ **Direct Image Access**: Fetch generated images as base64-encoded data
-- ⚙️ **Flexible Parameters**: Inject prompt, width, height into your workflows
+- ⚙️ **Flexible Parameters**: Inject prompt, negative prompt, width, height into your workflows
+- 📜 **Request History**: Track all generations with workflow name, prompts, dimensions, and timestamps
 - 🔌 **Easy Integration**: Works with any MCP-compatible client via `npx` command
 - 📡 **Real-time Updates**: WebSocket support for execution progress tracking
 
@@ -74,7 +77,7 @@ Choose your AI tool and follow the configuration:
       "args": ["-y", "comfyui-mcp-server"],
       "env": {
         "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_PATH": "/path/to/your/workflow.json"
+        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
       }
     }
   }
@@ -111,7 +114,7 @@ Or manually edit `claude_desktop_config.json` with the same configuration as Cla
       "args": ["-y", "comfyui-mcp-server"],
       "env": {
         "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_PATH": "/path/to/your/workflow.json"
+        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
       }
     }
   }
@@ -138,7 +141,7 @@ Or manually edit `claude_desktop_config.json` with the same configuration as Cla
       "args": ["-y", "comfyui-mcp-server"],
       "env": {
         "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_PATH": "/path/to/your/workflow.json"
+        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
       }
     }
   }
@@ -165,7 +168,7 @@ Or manually edit `claude_desktop_config.json` with the same configuration as Cla
       "args": ["-y", "comfyui-mcp-server"],
       "env": {
         "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_PATH": "/path/to/your/workflow.json"
+        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
       }
     }
   }
@@ -191,7 +194,7 @@ Or manually edit `claude_desktop_config.json` with the same configuration as Cla
       "args": ["-y", "comfyui-mcp-server"],
       "env": {
         "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_PATH": "/path/to/your/workflow.json"
+        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
       }
     }
   }
@@ -218,7 +221,7 @@ Or manually edit `claude_desktop_config.json` with the same configuration as Cla
       "args": ["-y", "comfyui-mcp-server"],
       "env": {
         "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_PATH": "/path/to/your/workflow.json"
+        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
       }
     }
   }
@@ -242,7 +245,7 @@ Or manually edit `claude_desktop_config.json` with the same configuration as Cla
       "args": ["-y", "comfyui-mcp-server"],
       "env": {
         "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_PATH": "/path/to/your/workflow.json"
+        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
       }
     }
   }
@@ -274,7 +277,7 @@ Then reference it in your MCP client config using the local path instead of npx.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `COMFYUI_URL` | Base URL of your ComfyUI instance | `http://127.0.0.1:8188` |
-| `COMFYUI_WORKFLOW_PATH` | Path to your exported workflow JSON file | `./workflow.json` |
+| `COMFYUI_WORKFLOW_DIR` | Directory containing your workflow JSON files | `./workflow_files` |
 
 ### ComfyUI Setup
 
@@ -283,11 +286,13 @@ Then reference it in your MCP client config using the local path instead of npx.
    python main.py --listen 127.0.0.1 --port 8188
    ```
 
-2. **Export Your Workflow**:
-   - Create your desired workflow in ComfyUI
-   - Click "Save (API Format)" to export as JSON
-   - Save the file (e.g., `workflow.json`)
-   - Set `COMFYUI_WORKFLOW_PATH` to point to this file
+2. **Setup Workflow Directory**:
+   - Create a directory for your workflow files (e.g., `workflow_files/`)
+   - Create your desired workflows in ComfyUI
+   - Click "Save (API Format)" to export each as JSON
+   - Save at least one workflow as `default_workflow.json` in the directory
+   - Add other workflows with descriptive names (e.g., `portrait.json`, `landscape.json`)
+   - Set `COMFYUI_WORKFLOW_DIR` to point to this directory
 
 3. **Verify API Access**:
    ```bash
@@ -296,23 +301,53 @@ Then reference it in your MCP client config using the local path instead of npx.
 
 ## Usage
 
-### Tool 1: `generate_image`
+### Tool 1: `list_workflows`
 
-Generate an image using your ComfyUI workflow with the specified parameters. The server will load your workflow JSON and inject the provided parameters.
+List all available workflow files in your workspace directory. Shows which workflow is set as the default.
 
 **Input Schema:**
 ```typescript
 {
-  prompt: string;          // Text description of the image to generate
-  negative_prompt?: string;// Optional: what should NOT be in the image
-  width?: number;          // Image width in pixels (default: 512)
-  height?: number;         // Image height in pixels (default: 512)
-  workflow_path?: string;  // Optional: override default workflow path
+  // No parameters required
+}
+```
+
+**Response:**
+```
+Available workflows in /path/to/workflow_files:
+
+- default_workflow.json (default)
+- portrait.json
+- landscape.json
+- anime_style.json
+
+Default workflow: default_workflow.json
+```
+
+**Example:**
+```
+User: What workflows are available?
+AI: [Calls list_workflows]
+Response: Lists all .json files in the workflow directory
+```
+
+### Tool 2: `generate_image`
+
+Generate an image using a ComfyUI workflow with the specified parameters. You can optionally select which workflow to use.
+
+**Input Schema:**
+```typescript
+{
+  prompt: string;           // Text description of the image to generate
+  negative_prompt?: string; // Optional: what should NOT be in the image
+  width?: number;           // Image width in pixels (default: 512)
+  height?: number;          // Image height in pixels (default: 512)
+  workflow_name?: string;   // Optional: workflow filename (e.g., "portrait.json")
 }
 ```
 
 **How It Works:**
-- The server loads your workflow JSON from `COMFYUI_WORKFLOW_PATH`
+- The server loads the specified workflow (or `default_workflow.json` if not specified)
 - It intelligently finds the appropriate nodes to inject parameters (see "Parameter Injection" below)
 - Parameters are injected into the appropriate nodes
 - The modified workflow is queued to ComfyUI
@@ -328,12 +363,16 @@ Generate an image using your ComfyUI workflow with the specified parameters. The
 
 **Example:**
 ```
-User: Generate an image of a serene mountain landscape at sunset
-AI: [Calls generate_image with prompt="serene mountain landscape at sunset", width=1024, height=768]
+User: Generate a portrait using the portrait workflow
+AI: [Calls generate_image with prompt="professional headshot portrait", workflow_name="portrait.json", width=768, height=1024]
 Response: { prompt_id: "abc123", number: 1, status: "queued" }
+
+User: Generate an image of a mountain landscape (using default workflow)
+AI: [Calls generate_image with prompt="serene mountain landscape at sunset", width=1024, height=768]
+Response: { prompt_id: "def456", number: 1, status: "queued" }
 ```
 
-### Tool 2: `get_image`
+### Tool 3: `get_image`
 
 Retrieve a generated image by its prompt ID.
 
@@ -371,9 +410,9 @@ Response: {
 }
 ```
 
-### Tool 3: `get_request_history`
+### Tool 4: `get_request_history`
 
-Retrieve the history of all image generation requests made through this server. Useful for recovering lost prompt IDs or reviewing past generations.
+Retrieve the history of all image generation requests made through this server. Includes workflow name, prompts, dimensions, and current status. Useful for recovering lost prompt IDs or reviewing past generations.
 
 **Input Schema:**
 ```typescript
@@ -391,6 +430,7 @@ Retrieve the history of all image generation requests made through this server. 
     negative_prompt?: string;    // The negative prompt (if provided)
     width: number;               // Image width
     height: number;              // Image height
+    workflow_name: string;       // Name of the workflow file used
     timestamp: string;           // ISO timestamp when request was made
     status: string;              // Current status: "queued", "executing", "completed", "failed"
     queue_position?: number;     // Position in queue when submitted
@@ -407,19 +447,21 @@ Response: {
   history: [
     {
       prompt_id: "abc123",
-      prompt: "serene mountain landscape at sunset",
-      negative_prompt: "people, buildings",
-      width: 1024,
-      height: 768,
+      prompt: "professional headshot portrait",
+      negative_prompt: "blurry, low quality",
+      width: 768,
+      height: 1024,
+      workflow_name: "portrait.json",
       timestamp: "2025-01-15T10:30:00.000Z",
       status: "completed",
       queue_position: 1
     },
     {
       prompt_id: "def456",
-      prompt: "cyberpunk city at night",
-      width: 512,
-      height: 512,
+      prompt: "serene mountain landscape at sunset",
+      width: 1024,
+      height: 768,
+      workflow_name: "default_workflow.json",
       timestamp: "2025-01-15T10:25:00.000Z",
       status: "completed",
       queue_position: 1
@@ -436,19 +478,30 @@ Response: {
 This server follows a layered architecture:
 
 1. **MCP Layer**: Handles protocol communication via stdio transport
-2. **Tool Layer**: Implements `generate_image` and `get_image` tools
+2. **Tool Layer**: Implements `list_workflows`, `generate_image`, `get_image`, and `get_request_history` tools
 3. **ComfyUI Client Layer**: Manages HTTP/WebSocket communication with ComfyUI
-4. **Workflow Loader**: Loads user-provided workflow JSON and injects parameters
+4. **Workflow Loader**: Loads user-provided workflow JSON files from workspace directory and injects parameters
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed technical design.
 
 ## Workflow Setup
 
-### Creating Your Workflow
+### Creating Workflows
 
-1. **Design in ComfyUI**: Create your workflow with the desired nodes (text-to-image, img2img, etc.)
+1. **Design in ComfyUI**: Create your workflows with the desired nodes (text-to-image, img2img, etc.)
 2. **Export as JSON**: Click "Save (API Format)" - this exports the workflow in the format the API expects
-3. **Configure Path**: Set `COMFYUI_WORKFLOW_PATH` environment variable to point to your JSON file
+3. **Organize Files**:
+   - Create a workflow directory (e.g., `workflow_files/`)
+   - Save at least one workflow as `default_workflow.json`
+   - Save other workflows with descriptive names (e.g., `portrait.json`, `landscape.json`, `anime.json`)
+4. **Configure Directory**: Set `COMFYUI_WORKFLOW_DIR` environment variable to point to your workflow directory
+
+### Switching Between Workflows
+
+When generating images, you can specify which workflow to use:
+- **Default workflow**: Omit the `workflow_name` parameter to use `default_workflow.json`
+- **Specific workflow**: Pass `workflow_name: "portrait.json"` to use a specific workflow
+- **List available**: Use the `list_workflows` tool to see all available workflows
 
 ### Parameter Injection
 
@@ -565,9 +618,9 @@ Error: Cannot connect to ComfyUI at http://127.0.0.1:8188
 
 ### Workflow Not Found
 ```
-Error: Workflow file not found at path
+Error: Workflow file not found: default_workflow.json in /path/to/workflow_files
 ```
-**Solution**: Verify `COMFYUI_WORKFLOW_PATH` points to a valid exported workflow JSON file.
+**Solution**: Ensure `default_workflow.json` exists in your `COMFYUI_WORKFLOW_DIR` directory, or specify a valid workflow name using the `workflow_name` parameter.
 
 ### Image Generation Timeout
 ```
@@ -590,19 +643,21 @@ Error: Could not find suitable node for parameter injection
 
 ## Limitations
 
-- Requires user to provide workflow JSON exported from ComfyUI
+- Requires user to provide workflow JSON files exported from ComfyUI
 - Parameter injection relies on standard node types (CLIPTextEncode, EmptyLatentImage, SaveImage)
 - Requires ComfyUI instance to be running before server starts
 - No built-in retry mechanism for failed generations
+- Request history is in-memory only - cleared on server restart
 
 ## Future Enhancements
 
 - [ ] Advanced parameter injection for custom node types
-- [ ] Multiple workflow support with selection mechanism
+- [x] Multiple workflow support with selection mechanism ✅ (Implemented)
 - [ ] Progress streaming via MCP notifications
 - [ ] Workflow validation and compatibility checking
 - [ ] Batch generation support
 - [ ] Workflow configuration UI/helper tool
+- [ ] Persistent request history with database storage
 
 ## Contributing
 

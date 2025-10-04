@@ -6,6 +6,7 @@ export interface RequestHistoryEntry {
   negative_prompt?: string;
   width: number;
   height: number;
+  workflow_name: string;
   timestamp: string;
   status: 'queued' | 'executing' | 'completed' | 'failed' | 'unknown';
   queue_position?: number;

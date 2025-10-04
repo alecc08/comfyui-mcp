@@ -8,7 +8,7 @@ export const GenerateImageInputSchema = z.object({
   negative_prompt: z.string().max(10000, 'Negative prompt too long').optional(),
   width: z.number().int().positive().optional().default(512),
   height: z.number().int().positive().optional().default(512),
-  workflow_path: z.string().optional(),
+  workflow_name: z.string().optional(),
 });
 
 export type GenerateImageInput = z.infer<typeof GenerateImageInputSchema>;

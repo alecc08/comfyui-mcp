@@ -9,7 +9,8 @@ export interface Config {
     baseUrl: string;
   };
   workflow: {
-    path: string;
+    workspaceDir: string;
+    defaultWorkflow: string;
   };
   mcp: {
     name: string;
@@ -23,7 +24,8 @@ export function loadConfig(): Config {
       baseUrl: process.env.COMFYUI_URL || 'http://127.0.0.1:8188',
     },
     workflow: {
-      path: process.env.COMFYUI_WORKFLOW_PATH || resolve(process.cwd(), 'workflow.json'),
+      workspaceDir: process.env.COMFYUI_WORKFLOW_DIR || resolve(process.cwd(), 'workflow_files'),
+      defaultWorkflow: 'default_workflow.json',
     },
     mcp: {
       name: 'comfyui-mcp-server',

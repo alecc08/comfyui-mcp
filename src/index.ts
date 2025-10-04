@@ -12,6 +12,7 @@ import { WorkflowLoader } from './workflows/workflow-loader.js';
 import { generateImage } from './tools/generate-image.js';
 import { getImage } from './tools/get-image.js';
 import { getRequestHistory, type RequestHistoryEntry } from './tools/get-request-history.js';
+import { listWorkflows } from './tools/list-workflows.js';
 
 // Load configuration
 const config = loadConfig();
@@ -20,7 +21,7 @@ const config = loadConfig();
 const comfyClient = new ComfyUIClient(config.comfyui.baseUrl);
 
 // Initialize workflow loader
-const workflowLoader = new WorkflowLoader(config.workflow.path);
+const workflowLoader = new WorkflowLoader(config.workflow.workspaceDir, config.workflow.defaultWorkflow);
 
 // Initialize request history storage (in-memory)
 const requestHistory: RequestHistoryEntry[] = [];
@@ -68,9 +69,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: 'Image height in pixels (default: 512)',
               default: 512,
             },
-            workflow_path: {
+            workflow_name: {
               type: 'string',
-              description: 'Optional: override the default workflow path',
+              description: 'Optional: name of the workflow file to use (e.g., "default_workflow.json"). If not specified, uses default_workflow.json',
             },
           },
           required: ['prompt'],
@@ -104,6 +105,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: [],
         },
       },
+      {
+        name: 'list_workflows',
+        description:
+          'List all available workflow files in the workflow workspace directory. ' +
+          'Shows which workflow is configured as the default.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+        },
+      },
     ],
   };
 });
@@ -123,7 +135,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ],
       };
     } else if (name === 'get_image') {
-      const result = await getImage(args, comfyClient);
+      const result = await getImage(args, comfyClient, requestHistory);
       return {
         content: [
           {
@@ -142,16 +154,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
         ],
       };
+    } else if (name === 'list_workflows') {
+      const result = await listWorkflows(workflowLoader);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result,
+          },
+        ],
+      };
     } else {
       throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+
+    // Log full error to stderr for debugging
+    console.error(`Error in tool '${name}':`, errorMessage);
+    if (errorStack) {
+      console.error('Stack trace:', errorStack);
+    }
+
+    // Return user-friendly error with details
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({ error: errorMessage }, null, 2),
+          text: JSON.stringify(
+            {
+              error: errorMessage,
+              tool: name,
+              details: 'Check server logs for more information',
+            },
+            null,
+            2
+          ),
         },
       ],
       isError: true,
@@ -170,14 +209,16 @@ async function main() {
     // Continue anyway - the error will be caught when tools are called
   }
 
-  // Verify workflow file exists
+  // Verify workflow workspace directory exists
   try {
-    await workflowLoader.loadWorkflow();
-    console.error(`Loaded workflow from: ${config.workflow.path}`);
+    const workflows = await workflowLoader.listWorkflows();
+    console.error(`Workflow workspace: ${config.workflow.workspaceDir}`);
+    console.error(`Found ${workflows.length} workflow file(s)`);
+    console.error(`Default workflow: ${config.workflow.defaultWorkflow}`);
   } catch (error) {
-    console.error(`Warning: Failed to load workflow: ${(error as Error).message}`);
-    console.error(`Workflow path: ${config.workflow.path}`);
-    // Continue anyway - the error will be caught when generate_image is called
+    console.error(`Warning: Failed to access workflow workspace: ${(error as Error).message}`);
+    console.error(`Workspace directory: ${config.workflow.workspaceDir}`);
+    // Continue anyway - the error will be caught when tools are called
   }
 
   const transport = new StdioServerTransport();

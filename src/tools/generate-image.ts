@@ -25,8 +25,11 @@ export async function generateImage(
     ? sanitizePrompt(validatedInput.negative_prompt)
     : undefined;
 
+  // Determine workflow name
+  const workflowName = validatedInput.workflow_name;
+
   // Load workflow (uses cache if available)
-  const baseWorkflow = await workflowLoader.loadWorkflow();
+  const baseWorkflow = await workflowLoader.loadWorkflow(workflowName);
 
   // Inject parameters
   const modifiedWorkflow = workflowLoader.injectParameters(baseWorkflow, {
@@ -49,6 +52,7 @@ export async function generateImage(
     negative_prompt: sanitizedNegativePrompt,
     width: validatedInput.width,
     height: validatedInput.height,
+    workflow_name: workflowName || workflowLoader.getDefaultWorkflow(),
     timestamp: new Date().toISOString(),
     status: 'queued',
     queue_position: response.number,

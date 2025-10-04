@@ -51,3 +51,16 @@ export interface ImageData {
   type: string;
   data: string; // base64-encoded
 }
+
+// Queue item structure
+export interface QueueItem {
+  prompt_id: string;
+  number: number;
+  prompt: [number, ComfyUIWorkflow];
+}
+
+// Response from GET /queue
+export interface QueueResponse {
+  queue_running: QueueItem[];
+  queue_pending: QueueItem[];
+}

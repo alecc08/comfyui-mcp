@@ -1,4 +1,5 @@
-import { readFile } from 'fs/promises';
+import { readFile, readdir } from 'fs/promises';
+import { join } from 'path';
 import type { ComfyUIWorkflow, WorkflowNode } from '../comfyui/types.js';
 
 export interface WorkflowParameters {
@@ -9,35 +10,56 @@ export interface WorkflowParameters {
 }
 
 export class WorkflowLoader {
-  private workflowPath: string;
-  private cachedWorkflow: ComfyUIWorkflow | null = null;
+  private workspaceDir: string;
+  private defaultWorkflow: string;
+  private workflowCache: Map<string, ComfyUIWorkflow> = new Map();
 
-  constructor(workflowPath: string) {
-    this.workflowPath = workflowPath;
+  constructor(workspaceDir: string, defaultWorkflow: string = 'default_workflow.json') {
+    this.workspaceDir = workspaceDir;
+    this.defaultWorkflow = defaultWorkflow;
   }
 
   /**
-   * Load workflow from file (cached after first load)
+   * List all available workflow files in the workspace directory
    */
-  async loadWorkflow(): Promise<ComfyUIWorkflow> {
-    if (this.cachedWorkflow) {
-      return this.cachedWorkflow;
+  async listWorkflows(): Promise<string[]> {
+    try {
+      const files = await readdir(this.workspaceDir);
+      return files.filter(file => file.endsWith('.json'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Workflow workspace directory not found: ${this.workspaceDir}`);
+      }
+      throw new Error(`Failed to list workflows: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * Load workflow from file by name (cached after first load)
+   */
+  async loadWorkflow(workflowName?: string): Promise<ComfyUIWorkflow> {
+    const name = workflowName || this.defaultWorkflow;
+
+    // Check cache first
+    if (this.workflowCache.has(name)) {
+      return this.workflowCache.get(name)!;
     }
 
     try {
-      const fileContent = await readFile(this.workflowPath, 'utf-8');
+      const workflowPath = join(this.workspaceDir, name);
+      const fileContent = await readFile(workflowPath, 'utf-8');
       const workflow = JSON.parse(fileContent) as ComfyUIWorkflow;
 
       // Validate basic structure
       this.validateWorkflow(workflow);
 
-      this.cachedWorkflow = workflow;
+      this.workflowCache.set(name, workflow);
       return workflow;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new Error(`Workflow file not found: ${this.workflowPath}`);
+        throw new Error(`Workflow file not found: ${name} in ${this.workspaceDir}`);
       }
-      throw new Error(`Failed to load workflow: ${(error as Error).message}`);
+      throw new Error(`Failed to load workflow ${name}: ${(error as Error).message}`);
     }
   }
 
@@ -51,7 +73,12 @@ export class WorkflowLoader {
    */
   injectParameters(workflow: ComfyUIWorkflow, params: WorkflowParameters): ComfyUIWorkflow {
     // Create a deep copy to avoid mutating the cached workflow
-    const modifiedWorkflow = JSON.parse(JSON.stringify(workflow)) as ComfyUIWorkflow;
+    let modifiedWorkflow: ComfyUIWorkflow;
+    try {
+      modifiedWorkflow = JSON.parse(JSON.stringify(workflow)) as ComfyUIWorkflow;
+    } catch (error) {
+      throw new Error(`Failed to clone workflow: ${(error as Error).message}`);
+    }
 
     // Find KSampler node to intelligently locate positive/negative prompt nodes
     const samplerNodeId = this.findNodeByType(modifiedWorkflow, 'KSampler');
@@ -64,8 +91,14 @@ export class WorkflowLoader {
         const positiveConnection = samplerNode.inputs.positive;
         if (Array.isArray(positiveConnection) && positiveConnection.length > 0) {
           const positiveNodeId = String(positiveConnection[0]);
-          if (modifiedWorkflow[positiveNodeId]?.class_type === 'CLIPTextEncode') {
+          const positiveNode = modifiedWorkflow[positiveNodeId];
+          if (!positiveNode) {
+            throw new Error(`KSampler node ${samplerNodeId} references non-existent positive node ${positiveNodeId}`);
+          }
+          if (positiveNode.class_type === 'CLIPTextEncode') {
             modifiedWorkflow[positiveNodeId].inputs.text = params.prompt;
+          } else {
+            console.warn(`Positive connection from KSampler points to ${positiveNode.class_type} instead of CLIPTextEncode`);
           }
         }
       }
@@ -75,8 +108,14 @@ export class WorkflowLoader {
         const negativeConnection = samplerNode.inputs.negative;
         if (Array.isArray(negativeConnection) && negativeConnection.length > 0) {
           const negativeNodeId = String(negativeConnection[0]);
-          if (modifiedWorkflow[negativeNodeId]?.class_type === 'CLIPTextEncode') {
+          const negativeNode = modifiedWorkflow[negativeNodeId];
+          if (!negativeNode) {
+            throw new Error(`KSampler node ${samplerNodeId} references non-existent negative node ${negativeNodeId}`);
+          }
+          if (negativeNode.class_type === 'CLIPTextEncode') {
             modifiedWorkflow[negativeNodeId].inputs.text = params.negative_prompt;
+          } else {
+            console.warn(`Negative connection from KSampler points to ${negativeNode.class_type} instead of CLIPTextEncode`);
           }
         }
       }
@@ -86,6 +125,8 @@ export class WorkflowLoader {
         const promptNodeId = this.findNodeByType(modifiedWorkflow, 'CLIPTextEncode');
         if (promptNodeId) {
           modifiedWorkflow[promptNodeId].inputs.text = params.prompt;
+        } else {
+          console.warn('No KSampler or CLIPTextEncode node found in workflow - prompt will not be injected');
         }
       }
     }
@@ -98,12 +139,21 @@ export class WorkflowLoader {
         this.findNodeByType(modifiedWorkflow, 'EmptySD3LatentImage');
 
       if (latentNodeId) {
+        const latentNode = modifiedWorkflow[latentNodeId];
         if (params.width !== undefined) {
+          if (typeof latentNode.inputs.width !== 'number') {
+            console.warn(`Node ${latentNodeId} width is not a number: ${typeof latentNode.inputs.width}`);
+          }
           modifiedWorkflow[latentNodeId].inputs.width = params.width;
         }
         if (params.height !== undefined) {
+          if (typeof latentNode.inputs.height !== 'number') {
+            console.warn(`Node ${latentNodeId} height is not a number: ${typeof latentNode.inputs.height}`);
+          }
           modifiedWorkflow[latentNodeId].inputs.height = params.height;
         }
+      } else {
+        console.warn('No EmptyLatentImage or EmptySD3LatentImage node found in workflow - dimensions will not be injected');
       }
     }
 
@@ -147,17 +197,27 @@ export class WorkflowLoader {
   }
 
   /**
-   * Get the current workflow path
+   * Get the workspace directory
    */
-  getWorkflowPath(): string {
-    return this.workflowPath;
+  getWorkspaceDir(): string {
+    return this.workspaceDir;
   }
 
   /**
-   * Update workflow path and clear cache
+   * Get the default workflow name
    */
-  setWorkflowPath(path: string): void {
-    this.workflowPath = path;
-    this.cachedWorkflow = null;
+  getDefaultWorkflow(): string {
+    return this.defaultWorkflow;
+  }
+
+  /**
+   * Clear workflow cache
+   */
+  clearCache(workflowName?: string): void {
+    if (workflowName) {
+      this.workflowCache.delete(workflowName);
+    } else {
+      this.workflowCache.clear();
+    }
   }
 }
