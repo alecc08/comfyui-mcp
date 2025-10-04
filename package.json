@@ -1,0 +1,38 @@
+{
+  "name": "comfyui-mcp-server",
+  "version": "0.1.0",
+  "description": "Model Context Protocol server for ComfyUI image generation",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "comfyui-mcp-server": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "comfyui",
+    "image-generation",
+    "ai",
+    "stable-diffusion"
+  ],
+  "author": "alecc08",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0"
+  }
+}
