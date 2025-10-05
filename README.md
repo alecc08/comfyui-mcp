@@ -531,15 +531,7 @@ Contributions welcome! Please:
 
 MIT License - see LICENSE file for details
 
-## Acknowledgments
-
-- [Anthropic](https://www.anthropic.com/) for the Model Context Protocol
-- [ComfyUI](https://github.com/comfyanonymous/ComfyUI) for the powerful image generation framework
-- MCP TypeScript SDK contributors
-
 ## Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/comfyui-mcp/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/comfyui-mcp/discussions)
 - **MCP Docs**: [modelcontextprotocol.io](https://modelcontextprotocol.io)
 - **ComfyUI Docs**: [docs.comfy.org](https://docs.comfy.org)
