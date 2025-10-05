@@ -17,16 +17,22 @@ The server communicates with a local ComfyUI instance via its REST API and WebSo
 ```mermaid
 graph TB
     A[AI Assistant/LLM<br/>Claude, GPT, etc.] <-->|MCP Protocol<br/>stdio| B[ComfyUI MCP Server<br/>This Package]
-    B <-->|HTTP/WebSocket<br/>REST API| C[ComfyUI Instance<br/>localhost:8188]
-    C -->|Generated Images| B
-    B -->|Base64 Images| A
+    B <-->|HTTP API| C[ComfyUI Instance<br/>localhost:8188]
+    C -->|Image Data| B
+    B -->|Cache to Disk| E[Image Cache<br/>./image_cache/]
+    B <-->|HTTP Server<br/>localhost:8190| F[HTTP Image Proxy<br/>Built-in]
+    F -->|Serve Images| E
+    B -->|Image URLs| A
+    A -->|Fetch Images| F
     B -->|Store| D[(Request History<br/>In-Memory)]
     D -->|Retrieve| B
 
-    style A fill:#e1f5ff
-    style B fill:#fff4e1
-    style C fill:#f0e1ff
-    style D fill:#e1ffe1
+    style A fill:#1a5490,stroke:#0d3a6b,color:#fff
+    style B fill:#d68910,stroke:#9c6508,color:#fff
+    style C fill:#7030a0,stroke:#501d6e,color:#fff
+    style D fill:#2d7d2d,stroke:#1e5a1e,color:#fff
+    style E fill:#c45100,stroke:#8a3800,color:#fff
+    style F fill:#0066aa,stroke:#004477,color:#fff
 ```
 
 **How it works:**
@@ -34,15 +40,18 @@ graph TB
 2. This server loads your selected workflow (or default), injects parameters, and queues it to ComfyUI
 3. Each request is stored in memory with prompt details, dimensions, workflow name, and timestamp
 4. ComfyUI generates the image using your local GPU/models
-5. The server retrieves and returns the image to your AI assistant
-6. View request history anytime to recover lost prompt IDs or review past generations
+5. The server fetches images from ComfyUI and caches them to disk
+6. The server returns HTTP URLs (via built-in proxy server) instead of base64
+7. Your AI assistant fetches images directly via HTTP for efficient transfer
+8. View request history anytime to recover lost prompt IDs or review past generations
 
 ## Features
 
 - 🎨 **Multiple Workflows**: Store and switch between multiple ComfyUI workflows at runtime
 - 🗂️ **Workflow Management**: List available workflows and select which one to use for each generation
 - 🔄 **Asynchronous Execution**: Queue workflows and retrieve results when ready
-- 🖼️ **Direct Image Access**: Fetch generated images as base64-encoded data
+- 🖼️ **Efficient Image Delivery**: Built-in HTTP proxy server for fast image transfer via URLs (no base64 overhead)
+- 💾 **Disk-based Caching**: Images cached locally for quick repeated access
 - ⚙️ **Flexible Parameters**: Inject prompt, negative prompt, width, height into your workflows
 - 📜 **Request History**: Track all generations with workflow name, prompts, dimensions, and timestamps
 - 🔌 **Easy Integration**: Works with any MCP-compatible client via `npx` command
@@ -57,218 +66,54 @@ graph TB
 
 ## Installation
 
-### Quick Start - AI IDEs & Tools
-
-Choose your AI tool and follow the configuration:
-
-<details>
-<summary><b>Claude Desktop</b></summary>
-
-1. Open your Claude Desktop config file:
-   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-2. Add the server configuration:
-```json
-{
-  "mcpServers": {
-    "comfyui": {
-      "command": "npx",
-      "args": ["-y", "comfyui-mcp-server"],
-      "env": {
-        "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
-      }
-    }
-  }
-}
-```
-
-3. Restart Claude Desktop
-
-</details>
-
-<details>
-<summary><b>Claude Code</b></summary>
-
-Run this command to install:
-```bash
-claude mcp add comfyui-mcp-server
-```
-
-Or manually edit `claude_desktop_config.json` with the same configuration as Claude Desktop above.
-
-</details>
-
-<details>
-<summary><b>Cline (VS Code Extension)</b></summary>
-
-1. Click the **MCP Servers** icon in the Cline panel
-2. Click **"Configure MCP Servers"** to open `cline_mcp_settings.json`
-3. Add the configuration:
-```json
-{
-  "mcpServers": {
-    "comfyui": {
-      "command": "npx",
-      "args": ["-y", "comfyui-mcp-server"],
-      "env": {
-        "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
-      }
-    }
-  }
-}
-```
-
-4. Restart VS Code or reload the Cline extension
-
-**Alternative**: Use the Cline MCP Marketplace (click Extensions icon) to find and install with one click.
-
-</details>
-
-<details>
-<summary><b>Cursor</b></summary>
-
-1. Open Settings (Cmd/Ctrl + Shift + J)
-2. Go to **"Composer" → "Model Context Protocol"**
-3. Add the configuration:
-```json
-{
-  "mcpServers": {
-    "comfyui": {
-      "command": "npx",
-      "args": ["-y", "comfyui-mcp-server"],
-      "env": {
-        "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
-      }
-    }
-  }
-}
-```
-
-4. Restart Cursor
-
-</details>
-
-<details>
-<summary><b>Windsurf</b></summary>
-
-1. Open the MCP settings file:
-   - **macOS**: `~/Library/Application Support/Windsurf/config.json`
-   - **Windows**: `%APPDATA%\Windsurf\config.json`
-
-2. Add the configuration:
-```json
-{
-  "mcpServers": {
-    "comfyui": {
-      "command": "npx",
-      "args": ["-y", "comfyui-mcp-server"],
-      "env": {
-        "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
-      }
-    }
-  }
-}
-```
-
-3. Restart Windsurf
-
-</details>
-
-<details>
-<summary><b>VS Code with GitHub Copilot</b></summary>
-
-1. Install the [MCP Servers extension](https://marketplace.visualstudio.com/items?itemName=modelcontextprotocol.mcp-servers)
-2. Open Settings (Cmd/Ctrl + ,) and search for "MCP"
-3. Edit `settings.json`:
-```json
-{
-  "mcp.servers": {
-    "comfyui": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "comfyui-mcp-server"],
-      "env": {
-        "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
-      }
-    }
-  }
-}
-```
-
-4. Reload VS Code
-
-</details>
-
-<details>
-<summary><b>Zed Editor</b></summary>
-
-1. Open the Zed settings file:
-   - **macOS**: `~/.config/zed/settings.json`
-   - **Linux**: `~/.config/zed/settings.json`
-
-2. Add the configuration:
-```json
-{
-  "context_servers": {
-    "comfyui": {
-      "command": "npx",
-      "args": ["-y", "comfyui-mcp-server"],
-      "env": {
-        "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
-      }
-    }
-  }
-}
-```
-
-3. Restart Zed
-
-</details>
-
-<details>
-<summary><b>Continue (VS Code Extension)</b></summary>
-
-1. Open the Continue extension settings
-2. Edit `config.json` (usually in `~/.continue/config.json`):
-```json
-{
-  "mcpServers": {
-    "comfyui": {
-      "command": "npx",
-      "args": ["-y", "comfyui-mcp-server"],
-      "env": {
-        "COMFYUI_URL": "http://127.0.0.1:8188",
-        "COMFYUI_WORKFLOW_DIR": "/path/to/your/workflow_files"
-      }
-    }
-  }
-}
-```
-
-3. Restart the Continue extension
-
-</details>
-
-### Development Setup
-
-For local development and testing:
-
+1. **Clone the repository**:
 ```bash
 git clone <repository-url>
 cd comfyui-mcp
-npm install
-npm run build
-npm link
 ```
 
-Then reference it in your MCP client config using the local path instead of npx.
+2. **Install dependencies**:
+```bash
+npm install
+```
+
+3. **Build the server**:
+```bash
+npm run build
+```
+
+4. **Configure your MCP client** (Claude Desktop, Cline, Cursor, etc.):
+
+Edit your MCP client configuration file and add:
+
+```json
+{
+  "mcpServers": {
+    "comfyui": {
+      "command": "node",
+      "args": ["/absolute/path/to/comfyui-mcp/dist/index.js"],
+      "env": {
+        "COMFYUI_URL": "http://127.0.0.1:8188",
+        "COMFYUI_WORKFLOW_DIR": "/absolute/path/to/your/workflow_files"
+      }
+    }
+  }
+}
+```
+
+**Replace**:
+- `/absolute/path/to/comfyui-mcp/dist/index.js` with the actual path to your cloned repo
+- `/absolute/path/to/your/workflow_files` with the path to your workflow directory
+
+**Config file locations**:
+- **Claude Desktop**:
+  - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+  - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- **Cline**: `cline_mcp_settings.json` (open via MCP Servers icon in Cline panel)
+- **Cursor**: Settings → Composer → Model Context Protocol
+- **Other clients**: Refer to your client's MCP configuration documentation
+
+5. **Restart your MCP client**
 
 ## Configuration
 
@@ -278,6 +123,8 @@ Then reference it in your MCP client config using the local path instead of npx.
 |----------|-------------|---------|
 | `COMFYUI_URL` | Base URL of your ComfyUI instance | `http://127.0.0.1:8188` |
 | `COMFYUI_WORKFLOW_DIR` | Directory containing your workflow JSON files | `./workflow_files` |
+| `COMFYUI_MCP_HTTP_PORT` | Port for the built-in HTTP image proxy server | `8190` |
+| `COMFYUI_IMAGE_CACHE_DIR` | Directory for caching downloaded images | `./image_cache` |
 
 ### ComfyUI Setup
 
@@ -391,8 +238,10 @@ Retrieve a generated image by its prompt ID.
     filename: string;      // Image filename
     subfolder: string;     // Subfolder path
     type: string;          // Image type (output/temp)
-    data: string;          // Base64-encoded image data
+    url: string;           // HTTP URL to fetch the image
   }];
+  queue_position?: number; // Position in queue (if pending)
+  queue_size?: number;     // Total items in queue (if pending)
   error?: string;          // Error message if applicable
 }
 ```
@@ -405,10 +254,19 @@ Response: {
   status: "completed",
   images: [{
     filename: "ComfyUI_00001_.png",
-    data: "iVBORw0KGgoAAAANSUhEUg..."
+    subfolder: "",
+    type: "output",
+    url: "http://localhost:8190/images/abc123/ComfyUI_00001_.png?subfolder=&type=output"
   }]
 }
 ```
+
+**Image Access:**
+The image URL points to the built-in HTTP proxy server which:
+1. Fetches the image from ComfyUI on first request
+2. Caches it to disk in the configured cache directory
+3. Serves subsequent requests from cache for fast access
+4. Works even if the MCP server is on a different machine than ComfyUI
 
 ### Tool 4: `get_request_history`
 
@@ -479,10 +337,12 @@ This server follows a layered architecture:
 
 1. **MCP Layer**: Handles protocol communication via stdio transport
 2. **Tool Layer**: Implements `list_workflows`, `generate_image`, `get_image`, and `get_request_history` tools
-3. **ComfyUI Client Layer**: Manages HTTP/WebSocket communication with ComfyUI
-4. **Workflow Loader**: Loads user-provided workflow JSON files from workspace directory and injects parameters
+3. **HTTP Proxy Layer**: Built-in Express server for efficient image delivery via URLs
+4. **Image Cache Layer**: Disk-based caching system for downloaded images
+5. **ComfyUI Client Layer**: Manages HTTP/WebSocket communication with ComfyUI
+6. **Workflow Loader**: Loads user-provided workflow JSON files from workspace directory and injects parameters
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed technical design.
+See [CLAUDE.md](./CLAUDE.md) for detailed technical design and implementation notes.
 
 ## Workflow Setup
 

@@ -1,6 +1,7 @@
 import type { ComfyUIClient } from '../comfyui/client.js';
 import type { ImageData } from '../comfyui/types.js';
 import type { RequestHistoryEntry } from './get-request-history.js';
+import type { ImageServer } from '../http/image-server.js';
 import { GetImageInputSchema, validateFilename } from '../utils/validation.js';
 
 export interface GetImageOutput {
@@ -14,6 +15,7 @@ export interface GetImageOutput {
 export async function getImage(
   input: unknown,
   client: ComfyUIClient,
+  imageServer: ImageServer,
   requestHistory?: RequestHistoryEntry[]
 ): Promise<GetImageOutput> {
   // Validate input
@@ -82,7 +84,7 @@ export async function getImage(
       };
     }
 
-    // Extract images from outputs
+    // Extract images from outputs and build URLs
     const images: ImageData[] = [];
 
     for (const [nodeId, output] of Object.entries(entry.outputs)) {
@@ -94,27 +96,15 @@ export async function getImage(
             continue;
           }
 
-          try {
-            // Fetch the actual image data
-            const imageBuffer = await client.getImage(
-              imageMetadata.filename,
-              imageMetadata.subfolder,
-              imageMetadata.type,
-            );
+          // Build image URL using the image server
+          const imageUrl = imageServer.buildImageUrl(promptId, imageMetadata);
 
-            // Convert to base64
-            const base64Data = imageBuffer.toString('base64');
-
-            images.push({
-              filename: imageMetadata.filename,
-              subfolder: imageMetadata.subfolder,
-              type: imageMetadata.type,
-              data: base64Data,
-            });
-          } catch (error) {
-            console.error(`Failed to fetch image ${imageMetadata.filename}:`, error);
-            // Continue with other images
-          }
+          images.push({
+            filename: imageMetadata.filename,
+            subfolder: imageMetadata.subfolder,
+            type: imageMetadata.type,
+            url: imageUrl,
+          });
         }
       }
     }

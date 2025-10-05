@@ -26,5 +26,8 @@ Thumbs.db
 # TypeScript
 *.tsbuildinfo
 
+# Image cache
+image_cache/
+
 .claude/
 CLAUDE.md

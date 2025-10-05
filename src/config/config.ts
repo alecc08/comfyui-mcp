@@ -16,6 +16,10 @@ export interface Config {
     name: string;
     version: string;
   };
+  http: {
+    port: number;
+    cacheDir: string;
+  };
 }
 
 export function loadConfig(): Config {
@@ -30,6 +34,10 @@ export function loadConfig(): Config {
     mcp: {
       name: 'comfyui-mcp-server',
       version: '0.1.0',
+    },
+    http: {
+      port: parseInt(process.env.COMFYUI_MCP_HTTP_PORT || '8190', 10),
+      cacheDir: process.env.COMFYUI_IMAGE_CACHE_DIR || resolve(process.cwd(), 'image_cache'),
     },
   };
 

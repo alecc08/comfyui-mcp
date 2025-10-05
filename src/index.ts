@@ -9,6 +9,7 @@ import {
 import { loadConfig } from './config/config.js';
 import { ComfyUIClient } from './comfyui/client.js';
 import { WorkflowLoader } from './workflows/workflow-loader.js';
+import { ImageServer } from './http/image-server.js';
 import { generateImage } from './tools/generate-image.js';
 import { getImage } from './tools/get-image.js';
 import { getRequestHistory, type RequestHistoryEntry } from './tools/get-request-history.js';
@@ -22,6 +23,15 @@ const comfyClient = new ComfyUIClient(config.comfyui.baseUrl);
 
 // Initialize workflow loader
 const workflowLoader = new WorkflowLoader(config.workflow.workspaceDir, config.workflow.defaultWorkflow);
+
+// Initialize HTTP image server
+const imageServer = new ImageServer(
+  {
+    port: config.http.port,
+    cacheDir: config.http.cacheDir,
+  },
+  comfyClient
+);
 
 // Initialize request history storage (in-memory)
 const requestHistory: RequestHistoryEntry[] = [];
@@ -81,7 +91,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         name: 'get_image',
         description:
           'Retrieve a generated image by its prompt ID. ' +
-          'Returns the image data as base64-encoded string along with metadata.',
+          'Returns HTTP URLs to fetch the images from the local image server.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -135,7 +145,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ],
       };
     } else if (name === 'get_image') {
-      const result = await getImage(args, comfyClient, requestHistory);
+      const result = await getImage(args, comfyClient, imageServer, requestHistory);
       return {
         content: [
           {
@@ -200,6 +210,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start the server
 async function main() {
+  // Start HTTP image server
+  try {
+    await imageServer.start();
+    console.error(`Image server started on ${imageServer.getBaseUrl()}`);
+    console.error(`Image cache directory: ${config.http.cacheDir}`);
+  } catch (error) {
+    console.error(`Failed to start image server: ${(error as Error).message}`);
+    process.exit(1);
+  }
+
   // Check ComfyUI connectivity
   const isHealthy = await comfyClient.healthCheck();
   if (!isHealthy) {
@@ -225,6 +245,19 @@ async function main() {
   await server.connect(transport);
   console.error('ComfyUI MCP Server running on stdio');
 }
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.error('\nShutting down...');
+  await imageServer.stop();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.error('\nShutting down...');
+  await imageServer.stop();
+  process.exit(0);
+});
 
 main().catch((error) => {
   console.error('Fatal error:', error);

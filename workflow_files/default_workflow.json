@@ -114,7 +114,7 @@
   },
   "60": {
     "inputs": {
-      "filename_prefix": "mcp/",
+      "filename_prefix": "mcp/MCP",
       "images": [
         "8",
         0

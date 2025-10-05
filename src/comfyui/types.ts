@@ -44,12 +44,12 @@ export interface HistoryResponse {
   [promptId: string]: HistoryEntry;
 }
 
-// Image data with base64 encoding
+// Image data with HTTP URL
 export interface ImageData {
   filename: string;
   subfolder: string;
   type: string;
-  data: string; // base64-encoded
+  url: string; // HTTP URL to fetch the image
 }
 
 // Queue item structure
