@@ -342,7 +342,6 @@ This server follows a layered architecture:
 5. **ComfyUI Client Layer**: Manages HTTP/WebSocket communication with ComfyUI
 6. **Workflow Loader**: Loads user-provided workflow JSON files from workspace directory and injects parameters
 
-See [CLAUDE.md](./CLAUDE.md) for detailed technical design and implementation notes.
 
 ## Workflow Setup
 
