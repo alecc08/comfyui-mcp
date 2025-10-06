@@ -22,7 +22,11 @@ const config = loadConfig();
 const comfyClient = new ComfyUIClient(config.comfyui.baseUrl);
 
 // Initialize workflow loader
-const workflowLoader = new WorkflowLoader(config.workflow.workspaceDir, config.workflow.defaultWorkflow);
+const workflowLoader = new WorkflowLoader(
+  config.workflow.workspaceDir,
+  config.workflow.defaultWorkflow,
+  config.workflow.randomizeSeeds
+);
 
 // Initialize HTTP image server
 const imageServer = new ImageServer(
@@ -235,6 +239,7 @@ async function main() {
     console.error(`Workflow workspace: ${config.workflow.workspaceDir}`);
     console.error(`Found ${workflows.length} workflow file(s)`);
     console.error(`Default workflow: ${config.workflow.defaultWorkflow}`);
+    console.error(`Seed randomization: ${config.workflow.randomizeSeeds ? 'enabled' : 'disabled'}`);
   } catch (error) {
     console.error(`Warning: Failed to access workflow workspace: ${(error as Error).message}`);
     console.error(`Workspace directory: ${config.workflow.workspaceDir}`);

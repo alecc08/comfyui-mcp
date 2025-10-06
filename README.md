@@ -50,6 +50,7 @@ graph TB
 - 🎨 **Multiple Workflows**: Store and switch between multiple ComfyUI workflows at runtime
 - 🗂️ **Workflow Management**: List available workflows and select which one to use for each generation
 - 🔄 **Asynchronous Execution**: Queue workflows and retrieve results when ready
+- 🎲 **Seed Randomization**: Automatically randomizes seeds for varied batch generation results (configurable)
 - 🖼️ **Efficient Image Delivery**: Built-in HTTP proxy server for fast image transfer via URLs (no base64 overhead)
 - 💾 **Disk-based Caching**: Images cached locally for quick repeated access
 - ⚙️ **Flexible Parameters**: Inject prompt, negative prompt, width, height into your workflows
@@ -122,9 +123,10 @@ Edit your MCP client configuration file and add:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `COMFYUI_URL` | Base URL of your ComfyUI instance | `http://127.0.0.1:8188` |
-| `COMFYUI_WORKFLOW_DIR` | Directory containing your workflow JSON files | `./workflow_files` |
+| `COMFYUI_WORKFLOW_DIR` | Directory containing your workflow JSON files | `<repo_root>/workflow_files` (relative to `dist/index.js`) |
 | `COMFYUI_MCP_HTTP_PORT` | Port for the built-in HTTP image proxy server | `8190` |
 | `COMFYUI_IMAGE_CACHE_DIR` | Directory for caching downloaded images | `./image_cache` |
+| `COMFYUI_RANDOMIZE_SEEDS` | Enable/disable automatic seed randomization for varied results | `true` (set to `false` to disable) |
 
 ### ComfyUI Setup
 
@@ -368,7 +370,14 @@ The server uses an intelligent parameter injection strategy to work with a wide 
 
 #### How It Works
 
-1. **Prompt Injection (Positive & Negative)**
+1. **Seed Randomization** (enabled by default)
+   - Before any other parameter injection, the server scans all nodes in the workflow
+   - For any node with a `seed` input parameter, generates a random seed value
+   - This ensures different results when batching image generations with identical prompts
+   - **Useful for batch generation**: When generating multiple images with the same prompt, you get varied results instead of duplicates
+   - Can be disabled by setting `COMFYUI_RANDOMIZE_SEEDS=false` in your environment configuration
+
+2. **Prompt Injection (Positive & Negative)**
    - Finds the `KSampler` node in your workflow
    - Follows the `positive` connection to locate the positive prompt `CLIPTextEncode` node
    - Follows the `negative` connection to locate the negative prompt `CLIPTextEncode` node
@@ -376,7 +385,7 @@ The server uses an intelligent parameter injection strategy to work with a wide 
    - Injects your `negative_prompt` (if provided) into the negative node's `text` input
    - **Fallback**: If no KSampler is found, uses the first `CLIPTextEncode` node for the positive prompt
 
-2. **Dimension Injection**
+3. **Dimension Injection**
    - Searches for `EmptyLatentImage` (SD1.5/SDXL) or `EmptySD3LatentImage` (SD3) nodes
    - Injects `width` and `height` parameters into the node's inputs
 

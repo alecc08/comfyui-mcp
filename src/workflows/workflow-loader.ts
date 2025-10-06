@@ -12,11 +12,17 @@ export interface WorkflowParameters {
 export class WorkflowLoader {
   private workspaceDir: string;
   private defaultWorkflow: string;
+  private randomizeSeeds: boolean;
   private workflowCache: Map<string, ComfyUIWorkflow> = new Map();
 
-  constructor(workspaceDir: string, defaultWorkflow: string = 'default_workflow.json') {
+  constructor(
+    workspaceDir: string,
+    defaultWorkflow: string = 'default_workflow.json',
+    randomizeSeeds: boolean = true
+  ) {
     this.workspaceDir = workspaceDir;
     this.defaultWorkflow = defaultWorkflow;
+    this.randomizeSeeds = randomizeSeeds;
   }
 
   /**
@@ -70,6 +76,7 @@ export class WorkflowLoader {
    * - For prompts: Finds the KSampler node, then traces its "positive" and "negative"
    *   connections to find the CLIPTextEncode nodes
    * - For dimensions: Finds EmptyLatentImage or EmptySD3LatentImage nodes
+   * - For seeds: Randomizes all seed values if randomizeSeeds is enabled
    */
   injectParameters(workflow: ComfyUIWorkflow, params: WorkflowParameters): ComfyUIWorkflow {
     // Create a deep copy to avoid mutating the cached workflow
@@ -78,6 +85,11 @@ export class WorkflowLoader {
       modifiedWorkflow = JSON.parse(JSON.stringify(workflow)) as ComfyUIWorkflow;
     } catch (error) {
       throw new Error(`Failed to clone workflow: ${(error as Error).message}`);
+    }
+
+    // Randomize all seeds if enabled
+    if (this.randomizeSeeds) {
+      this.randomizeAllSeeds(modifiedWorkflow);
     }
 
     // Find KSampler node to intelligently locate positive/negative prompt nodes
@@ -218,6 +230,20 @@ export class WorkflowLoader {
       this.workflowCache.delete(workflowName);
     } else {
       this.workflowCache.clear();
+    }
+  }
+
+  /**
+   * Randomize all seed values in the workflow
+   * Finds all nodes with a 'seed' input and generates a random value
+   */
+  private randomizeAllSeeds(workflow: ComfyUIWorkflow): void {
+    for (const [nodeId, node] of Object.entries(workflow)) {
+      if (node.inputs && 'seed' in node.inputs) {
+        // Generate a random seed value (ComfyUI typically uses large integers)
+        const randomSeed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+        workflow[nodeId].inputs.seed = randomSeed;
+      }
     }
   }
 }
