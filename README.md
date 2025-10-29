@@ -1,5 +1,5 @@
 # ComfyUI MCP Server
-
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T6T61NJXQS)
 A Model Context Protocol (MCP) server that enables AI assistants to generate images using a local ComfyUI instance. This server provides seamless integration between MCP-compatible AI tools (like Claude Desktop) and ComfyUI's powerful image generation capabilities.
 
 ## Overview
