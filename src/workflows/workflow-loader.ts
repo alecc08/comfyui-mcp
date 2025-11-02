@@ -7,6 +7,11 @@ export interface WorkflowParameters {
   negative_prompt?: string;
   width?: number;
   height?: number;
+  // Image processing parameters
+  input_image?: string; // Filename from ComfyUI upload (for LoadImage nodes)
+  denoise_strength?: number; // For img2img (KSampler.denoise)
+  scale_factor?: number; // For ImageScale nodes
+  upscale_method?: string; // For UpscaleModelLoader nodes
 }
 
 export class WorkflowLoader {
@@ -77,6 +82,10 @@ export class WorkflowLoader {
    *   connections to find the CLIPTextEncode nodes
    * - For dimensions: Finds EmptyLatentImage or EmptySD3LatentImage nodes
    * - For seeds: Randomizes all seed values if randomizeSeeds is enabled
+   * - For input images: Injects filename into LoadImage nodes
+   * - For denoise strength: Injects into KSampler.denoise (for img2img workflows)
+   * - For scale factor: Injects into ImageScale or ImageScaleBy nodes
+   * - For upscale method: Injects model name into UpscaleModelLoader nodes
    */
   injectParameters(workflow: ComfyUIWorkflow, params: WorkflowParameters): ComfyUIWorkflow {
     // Create a deep copy to avoid mutating the cached workflow
@@ -166,6 +175,55 @@ export class WorkflowLoader {
         }
       } else {
         console.warn('No EmptyLatentImage or EmptySD3LatentImage node found in workflow - dimensions will not be injected');
+      }
+    }
+
+    // Inject input image filename into LoadImage nodes
+    if (params.input_image !== undefined) {
+      const loadImageNodeId = this.findNodeByType(modifiedWorkflow, 'LoadImage');
+      if (loadImageNodeId) {
+        modifiedWorkflow[loadImageNodeId].inputs.image = params.input_image;
+      } else {
+        console.warn('No LoadImage node found in workflow - input image will not be injected');
+      }
+    }
+
+    // Inject denoise strength into KSampler
+    if (params.denoise_strength !== undefined && samplerNodeId) {
+      if (typeof params.denoise_strength !== 'number' || params.denoise_strength < 0 || params.denoise_strength > 1) {
+        console.warn(`Invalid denoise_strength: ${params.denoise_strength}. Must be between 0.0 and 1.0`);
+      } else {
+        modifiedWorkflow[samplerNodeId].inputs.denoise = params.denoise_strength;
+      }
+    }
+
+    // Inject scale factor into ImageScale nodes
+    if (params.scale_factor !== undefined) {
+      // Try different scale node types
+      const scaleNodeId =
+        this.findNodeByType(modifiedWorkflow, 'ImageScale') ||
+        this.findNodeByType(modifiedWorkflow, 'ImageScaleBy');
+
+      if (scaleNodeId) {
+        const scaleNode = modifiedWorkflow[scaleNodeId];
+        // ImageScale uses width/height, ImageScaleBy uses scale_by
+        if (scaleNode.class_type === 'ImageScaleBy' && 'scale_by' in scaleNode.inputs) {
+          modifiedWorkflow[scaleNodeId].inputs.scale_by = params.scale_factor;
+        } else if ('width' in scaleNode.inputs && 'height' in scaleNode.inputs && params.width && params.height) {
+          // For ImageScale, calculate target dimensions from scale factor
+          modifiedWorkflow[scaleNodeId].inputs.width = Math.round(params.width * params.scale_factor);
+          modifiedWorkflow[scaleNodeId].inputs.height = Math.round(params.height * params.scale_factor);
+        }
+      } else {
+        console.warn('No ImageScale or ImageScaleBy node found in workflow - scale factor will not be injected');
+      }
+    }
+
+    // Inject upscale method (for upscale model selection)
+    if (params.upscale_method !== undefined) {
+      const upscaleNodeId = this.findNodeByType(modifiedWorkflow, 'UpscaleModelLoader');
+      if (upscaleNodeId) {
+        modifiedWorkflow[upscaleNodeId].inputs.model_name = params.upscale_method;
       }
     }
 

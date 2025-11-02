@@ -10,6 +10,7 @@ export interface RequestHistoryEntry {
   timestamp: string;
   status: 'queued' | 'executing' | 'completed' | 'failed' | 'unknown';
   queue_position?: number;
+  image_path?: string; // For image modification/processing workflows
 }
 
 export interface GetRequestHistoryOutput {

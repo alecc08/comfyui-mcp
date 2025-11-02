@@ -23,6 +23,62 @@ export const GetImageInputSchema = z.object({
 export type GetImageInput = z.infer<typeof GetImageInputSchema>;
 
 /**
+ * Schema for modify_image input (img2img)
+ */
+export const ModifyImageInputSchema = z.object({
+  image_path: z.string().min(1, 'Image path cannot be empty'),
+  prompt: z.string().min(1, 'Prompt cannot be empty').max(10000, 'Prompt too long'),
+  negative_prompt: z.string().max(10000, 'Negative prompt too long').optional(),
+  denoise_strength: z.number().min(0.0).max(1.0).optional().default(0.75),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  workflow_name: z.string().optional().default('img2img_workflow.json'),
+});
+
+export type ModifyImageInput = z.infer<typeof ModifyImageInputSchema>;
+
+/**
+ * Schema for resize_image input
+ */
+export const ResizeImageInputSchema = z.object({
+  image_path: z.string().min(1, 'Image path cannot be empty'),
+  method: z.enum(['upscale', 'downscale'], {
+    errorMap: () => ({ message: 'Method must be either "upscale" or "downscale"' }),
+  }),
+  scale_factor: z.number().positive().optional(),
+  target_width: z.number().int().positive().optional(),
+  target_height: z.number().int().positive().optional(),
+  workflow_name: z.string().optional(),
+}).refine(
+  (data) => {
+    // For upscale method, scale_factor is required
+    if (data.method === 'upscale' && !data.scale_factor) {
+      return false;
+    }
+    // For downscale method, either scale_factor OR target dimensions are required
+    if (data.method === 'downscale' && !data.scale_factor && (!data.target_width || !data.target_height)) {
+      return false;
+    }
+    return true;
+  },
+  {
+    message: 'For upscale: scale_factor required. For downscale: scale_factor OR (target_width AND target_height) required.',
+  }
+);
+
+export type ResizeImageInput = z.infer<typeof ResizeImageInputSchema>;
+
+/**
+ * Schema for remove_background input
+ */
+export const RemoveBackgroundInputSchema = z.object({
+  image_path: z.string().min(1, 'Image path cannot be empty'),
+  workflow_name: z.string().optional().default('remove_background_workflow.json'),
+});
+
+export type RemoveBackgroundInput = z.infer<typeof RemoveBackgroundInputSchema>;
+
+/**
  * Sanitize prompt text to prevent potential issues
  */
 export function sanitizePrompt(prompt: string): string {
@@ -37,4 +93,13 @@ export function validateFilename(filename: string): boolean {
   // Must be alphanumeric with dots, dashes, underscores
   // No path separators
   return /^[a-zA-Z0-9._-]+$/.test(filename);
+}
+
+/**
+ * Validate that a path is absolute (for security)
+ */
+export function isAbsolutePath(filePath: string): boolean {
+  // Windows: C:\path or \\network\path
+  // Unix: /path
+  return /^([a-zA-Z]:\\|\\\\|\/)/i.test(filePath);
 }
