@@ -22,7 +22,7 @@
     "stable-diffusion"
   ],
   "author": "alecc08",
-  "license": "MIT",
+  "license": "AGPLv3",
   "engines": {
     "node": ">=18.0.0"
   },
