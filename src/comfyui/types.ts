@@ -64,3 +64,10 @@ export interface QueueResponse {
   queue_running: QueueItem[];
   queue_pending: QueueItem[];
 }
+
+// Response from POST /upload/image
+export interface UploadImageResponse {
+  name: string;
+  subfolder: string;
+  type: string;
+}

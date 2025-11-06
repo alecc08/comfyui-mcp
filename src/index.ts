@@ -14,6 +14,9 @@ import { generateImage } from './tools/generate-image.js';
 import { getImage } from './tools/get-image.js';
 import { getRequestHistory, type RequestHistoryEntry } from './tools/get-request-history.js';
 import { listWorkflows } from './tools/list-workflows.js';
+import { modifyImage } from './tools/modify-image.js';
+import { resizeImage } from './tools/resize-image.js';
+import { removeBackground } from './tools/remove-background.js';
 
 // Load configuration
 const config = loadConfig();
@@ -130,6 +133,109 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: [],
         },
       },
+      {
+        name: 'modify_image',
+        description:
+          'Modify an existing image using AI-guided transformation (img2img). ' +
+          'Takes a source image and generates a new version based on your prompt. ' +
+          'Use denoise_strength to control how much the image changes (0.0=no change, 1.0=completely new). ' +
+          'Returns a prompt_id - use get_image to retrieve the result.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            image_path: {
+              type: 'string',
+              description: 'Absolute path to the source image file on the local filesystem',
+            },
+            prompt: {
+              type: 'string',
+              description: 'Text description of the desired transformation',
+            },
+            negative_prompt: {
+              type: 'string',
+              description: 'Optional: what to avoid in the transformation',
+            },
+            denoise_strength: {
+              type: 'number',
+              description: 'How much to change the image (0.0-1.0, default: 0.75). Lower values preserve more of the original.',
+              default: 0.75,
+            },
+            width: {
+              type: 'number',
+              description: 'Optional: output image width in pixels',
+            },
+            height: {
+              type: 'number',
+              description: 'Optional: output image height in pixels',
+            },
+            workflow_name: {
+              type: 'string',
+              description: 'Optional: name of the img2img workflow file (default: img2img_workflow.json)',
+            },
+          },
+          required: ['image_path', 'prompt'],
+        },
+      },
+      {
+        name: 'resize_image',
+        description:
+          'Resize or upscale an image to different dimensions. ' +
+          'Use "upscale" method with scale_factor for high-quality AI upscaling (2x, 4x, etc). ' +
+          'Use "downscale" method with target dimensions for simple resizing. ' +
+          'Returns a prompt_id - use get_image to retrieve the result.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            image_path: {
+              type: 'string',
+              description: 'Absolute path to the source image file on the local filesystem',
+            },
+            method: {
+              type: 'string',
+              enum: ['upscale', 'downscale'],
+              description: 'Resize method: "upscale" for quality AI upscaling, "downscale" for simple resizing',
+            },
+            scale_factor: {
+              type: 'number',
+              description: 'Scaling multiplier (e.g., 2.0 = 2x, 4.0 = 4x). Required for upscale, optional for downscale.',
+            },
+            target_width: {
+              type: 'number',
+              description: 'Target width in pixels (for downscale method)',
+            },
+            target_height: {
+              type: 'number',
+              description: 'Target height in pixels (for downscale method)',
+            },
+            workflow_name: {
+              type: 'string',
+              description: 'Optional: name of the workflow file to use',
+            },
+          },
+          required: ['image_path', 'method'],
+        },
+      },
+      {
+        name: 'remove_background',
+        description:
+          'Remove the background from an image, leaving only the subject with transparency. ' +
+          'Useful for creating cutouts, product photos, profile pictures, etc. ' +
+          'Returns a prompt_id - use get_image to retrieve the result.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            image_path: {
+              type: 'string',
+              description: 'Absolute path to the source image file on the local filesystem',
+            },
+            workflow_name: {
+              type: 'string',
+              description: 'Optional: name of the background removal workflow file (default: remove_background_workflow.json)',
+            },
+          },
+          required: ['image_path'],
+        },
+      },
     ],
   };
 });
@@ -175,6 +281,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           {
             type: 'text',
             text: result,
+          },
+        ],
+      };
+    } else if (name === 'modify_image') {
+      const result = await modifyImage(args, comfyClient, workflowLoader, requestHistory);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } else if (name === 'resize_image') {
+      const result = await resizeImage(args, comfyClient, workflowLoader, requestHistory);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } else if (name === 'remove_background') {
+      const result = await removeBackground(args, comfyClient, workflowLoader, requestHistory);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
           },
         ],
       };

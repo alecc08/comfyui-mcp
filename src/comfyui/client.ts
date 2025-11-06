@@ -4,7 +4,10 @@ import type {
   HistoryResponse,
   ImageMetadata,
   QueueResponse,
+  UploadImageResponse,
 } from './types.js';
+import fs from 'fs/promises';
+import path from 'path';
 
 export class ComfyUIClient {
   private baseUrl: string;
@@ -232,6 +235,85 @@ export class ComfyUIClient {
       return response.ok;
     } catch (error) {
       return false;
+    }
+  }
+
+  /**
+   * Upload an image file to ComfyUI
+   */
+  async uploadImage(imagePath: string): Promise<UploadImageResponse> {
+    // Validate file exists and is readable
+    try {
+      await fs.access(imagePath, fs.constants.R_OK);
+    } catch (error) {
+      throw new Error(`Cannot read file at path: ${imagePath}. Make sure the file exists and is readable.`);
+    }
+
+    // Validate file extension (case-insensitive)
+    const ext = path.extname(imagePath).toLowerCase();
+    const validExtensions = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'];
+    if (!validExtensions.includes(ext)) {
+      throw new Error(`Invalid image file extension: ${ext}. Supported formats: ${validExtensions.join(', ')}`);
+    }
+
+    // Read file
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = await fs.readFile(imagePath);
+    } catch (error) {
+      throw new Error(`Failed to read image file: ${(error as Error).message}`);
+    }
+
+    // Determine MIME type
+    const mimeTypes: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif',
+      '.bmp': 'image/bmp',
+    };
+    const mimeType = mimeTypes[ext] || 'application/octet-stream';
+
+    // Create FormData
+    const formData = new FormData();
+    const filename = path.basename(imagePath);
+
+    // Create a File/Blob from the buffer
+    const blob = new Blob([fileBuffer], { type: mimeType });
+    formData.append('image', blob, filename);
+
+    // Upload to ComfyUI
+    const url = `${this.baseUrl}/upload/image`;
+
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+      });
+    } catch (error) {
+      throw new Error(`Failed to connect to ComfyUI at ${this.baseUrl}: ${(error as Error).message}`);
+    }
+
+    if (!response.ok) {
+      let errorDetails = `${response.status} ${response.statusText}`;
+      try {
+        const errorBody = await response.text();
+        if (errorBody) {
+          errorDetails += `: ${errorBody}`;
+        }
+      } catch {
+        // If we can't read the body, just use the status
+      }
+      throw new Error(`Failed to upload image: ${errorDetails}`);
+    }
+
+    try {
+      const data = await response.json();
+      return data as UploadImageResponse;
+    } catch (error) {
+      throw new Error(`Invalid JSON response from ComfyUI upload endpoint: ${(error as Error).message}`);
     }
   }
 }
