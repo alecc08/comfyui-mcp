@@ -34,10 +34,6 @@ This directory contains workflow JSON files in API format for use with the Comfy
    - **REQUIRES**: Background removal extension
    - See "Background Removal Setup" below
 
-### 📦 Backup Files
-
-- **image_qwen_ui_backup.json** - Original UI-format workflow (for reference)
-
 ## Setup Instructions
 
 ### Upscale Model Setup
@@ -152,7 +148,6 @@ C:\ComfyUI\models\upscale_models\RealESRGAN_x4plus.pth
 - **Supported Models:** BiRefNet, RMBG-2.0, InSPyReNet, BEN, BEN2, and more
 - **Model Size:** 300-500MB per model
 - **Quality:** Excellent (best quality)
-- **Setup:** ⭐⭐⭐ Advanced
 
 **Installation Steps:**
 
@@ -343,28 +338,6 @@ ComfyUI/                                    # Main ComfyUI installation director
     └── (temporary processing files)
 ```
 
-### Platform-Specific Paths
-
-**Windows:**
-```
-C:\ComfyUI\models\upscale_models\RealESRGAN_x4plus.pth
-C:\ComfyUI\models\checkpoints\sd_xl_base_1.0.safetensors
-C:\ComfyUI\custom_nodes\rembg-comfyui-node\
-```
-
-**macOS:**
-```
-/Users/username/ComfyUI/models/upscale_models/RealESRGAN_x4plus.pth
-/Users/username/ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors
-/Users/username/ComfyUI/custom_nodes/rembg-comfyui-node/
-```
-
-**Linux:**
-```
-/home/username/ComfyUI/models/upscale_models/RealESRGAN_x4plus.pth
-/home/username/ComfyUI/models/checkpoints/sd_xl_base_1.0.safetensors
-/home/username/ComfyUI/custom_nodes/rembg-comfyui-node/
-```
 
 ### Model Requirements by Workflow
 
@@ -392,11 +365,6 @@ C:\ComfyUI\custom_nodes\rembg-comfyui-node\
    ```
 3. The models path is usually shown when models are loaded
 4. **Or** check the ComfyUI web interface console (F12) for path information
-
-**Default installation directories:**
-- Windows: `C:\ComfyUI\` or where you extracted/cloned it
-- macOS: `/Users/username/ComfyUI/`
-- Linux: `/home/username/ComfyUI/`
 
 ### Quick Reference: What Goes Where
 

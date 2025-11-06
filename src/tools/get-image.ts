@@ -4,8 +4,11 @@ import type { RequestHistoryEntry } from './get-request-history.js';
 import type { ImageServer } from '../http/image-server.js';
 import { GetImageInputSchema, validateFilename } from '../utils/validation.js';
 
+// Timeout constant: 15 minutes in milliseconds
+const GENERATION_TIMEOUT_MS = 15 * 60 * 1000;
+
 export interface GetImageOutput {
-  status: 'completed' | 'executing' | 'pending' | 'not_found';
+  status: 'completed' | 'executing' | 'pending' | 'not_found' | 'failed';
   images?: ImageData[];
   queue_position?: number;
   queue_size?: number;
@@ -21,6 +24,23 @@ export async function getImage(
   // Validate input
   const validatedInput = GetImageInputSchema.parse(input);
   const promptId = validatedInput.prompt_id;
+
+  // Check for timeout in request history
+  if (requestHistory) {
+    const historyEntry = requestHistory.find((entry) => entry.prompt_id === promptId);
+    if (historyEntry) {
+      const requestTime = new Date(historyEntry.timestamp).getTime();
+      const currentTime = Date.now();
+      const elapsedTime = currentTime - requestTime;
+
+      if (elapsedTime > GENERATION_TIMEOUT_MS) {
+        return {
+          status: 'failed',
+          error: `Request timed out after ${Math.floor(elapsedTime / 1000 / 60)} minutes (max: 15 minutes)`,
+        };
+      }
+    }
+  }
 
   try {
     // Fetch history for this prompt
@@ -76,6 +96,29 @@ export async function getImage(
     }
 
     const entry = history[promptId];
+
+    // Check for failure status first
+    if (entry.status.status_str === 'error') {
+      // Extract error messages from status.messages if available
+      let errorMessage = 'Image generation failed';
+      if (entry.status.messages && Array.isArray(entry.status.messages)) {
+        const errorMessages = entry.status.messages
+          .map((msg: any) => {
+            if (typeof msg === 'string') return msg;
+            if (msg && typeof msg === 'object') return JSON.stringify(msg);
+            return String(msg);
+          })
+          .filter(Boolean);
+        if (errorMessages.length > 0) {
+          errorMessage = errorMessages.join('; ');
+        }
+      }
+
+      return {
+        status: 'failed',
+        error: errorMessage,
+      };
+    }
 
     // Check completion status
     if (!entry.status.completed) {

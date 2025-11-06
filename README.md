@@ -2,6 +2,8 @@
 
 A Model Context Protocol (MCP) server that enables AI assistants to generate and process images using a local ComfyUI instance. This server provides seamless integration between MCP-compatible AI tools (like Claude Desktop) and ComfyUI's powerful image generation and processing capabilities.
 
+> **📚 New to this project?** Check out the **[Complete Setup Guide](SETUP.md)** for step-by-step instructions on installing ComfyUI, downloading models, and configuring everything from scratch!
+
 ## Overview
 
 This MCP server exposes seven powerful tools:
@@ -306,6 +308,10 @@ cd ComfyUI/models/upscale_models/
 ```
 
 ## Installation
+
+> **💡 First time setup?** See the **[Complete Setup Guide](SETUP.md)** for detailed instructions including ComfyUI installation, model downloads, and troubleshooting.
+
+### Quick Install (MCP Server Only)
 
 1. **Clone the repository**:
 ```bash
