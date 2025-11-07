@@ -42,29 +42,10 @@ export type ModifyImageInput = z.infer<typeof ModifyImageInputSchema>;
  */
 export const ResizeImageInputSchema = z.object({
   image_path: z.string().min(1, 'Image path cannot be empty'),
-  method: z.enum(['upscale', 'downscale'], {
-    errorMap: () => ({ message: 'Method must be either "upscale" or "downscale"' }),
-  }),
-  scale_factor: z.number().positive().optional(),
-  target_width: z.number().int().positive().optional(),
-  target_height: z.number().int().positive().optional(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
   workflow_name: z.string().optional(),
-}).refine(
-  (data) => {
-    // For upscale method, scale_factor is required
-    if (data.method === 'upscale' && !data.scale_factor) {
-      return false;
-    }
-    // For downscale method, either scale_factor OR target dimensions are required
-    if (data.method === 'downscale' && !data.scale_factor && (!data.target_width || !data.target_height)) {
-      return false;
-    }
-    return true;
-  },
-  {
-    message: 'For upscale: scale_factor required. For downscale: scale_factor OR (target_width AND target_height) required.',
-  }
-);
+});
 
 export type ResizeImageInput = z.infer<typeof ResizeImageInputSchema>;
 

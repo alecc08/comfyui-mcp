@@ -10,7 +10,6 @@ export interface WorkflowParameters {
   // Image processing parameters
   input_image?: string; // Filename from ComfyUI upload (for LoadImage nodes)
   denoise_strength?: number; // For img2img (KSampler.denoise)
-  scale_factor?: number; // For ImageScale nodes
   upscale_method?: string; // For UpscaleModelLoader nodes
 }
 
@@ -80,11 +79,11 @@ export class WorkflowLoader {
    * This method intelligently finds the appropriate nodes to inject parameters:
    * - For prompts: Finds the KSampler node, then traces its "positive" and "negative"
    *   connections to find the CLIPTextEncode nodes
-   * - For dimensions: Finds EmptyLatentImage or EmptySD3LatentImage nodes
+   * - For dimensions: Finds EmptyLatentImage or EmptySD3LatentImage nodes (generation)
+   *   or ImageScale nodes (resize)
    * - For seeds: Randomizes all seed values if randomizeSeeds is enabled
    * - For input images: Injects filename into LoadImage nodes
    * - For denoise strength: Injects into KSampler.denoise (for img2img workflows)
-   * - For scale factor: Injects into ImageScale or ImageScaleBy nodes
    * - For upscale method: Injects model name into UpscaleModelLoader nodes
    */
   injectParameters(workflow: ComfyUIWorkflow, params: WorkflowParameters): ComfyUIWorkflow {
@@ -197,25 +196,17 @@ export class WorkflowLoader {
       }
     }
 
-    // Inject scale factor into ImageScale nodes
-    if (params.scale_factor !== undefined) {
-      // Try different scale node types
-      const scaleNodeId =
-        this.findNodeByType(modifiedWorkflow, 'ImageScale') ||
-        this.findNodeByType(modifiedWorkflow, 'ImageScaleBy');
+    // Inject dimensions into ImageScale nodes (for resize workflows)
+    // Note: This is separate from EmptyLatentImage injection above
+    if (params.width !== undefined && params.height !== undefined) {
+      const scaleNodeId = this.findNodeByType(modifiedWorkflow, 'ImageScale');
 
       if (scaleNodeId) {
         const scaleNode = modifiedWorkflow[scaleNodeId];
-        // ImageScale uses width/height, ImageScaleBy uses scale_by
-        if (scaleNode.class_type === 'ImageScaleBy' && 'scale_by' in scaleNode.inputs) {
-          modifiedWorkflow[scaleNodeId].inputs.scale_by = params.scale_factor;
-        } else if ('width' in scaleNode.inputs && 'height' in scaleNode.inputs && params.width && params.height) {
-          // For ImageScale, calculate target dimensions from scale factor
-          modifiedWorkflow[scaleNodeId].inputs.width = Math.round(params.width * params.scale_factor);
-          modifiedWorkflow[scaleNodeId].inputs.height = Math.round(params.height * params.scale_factor);
+        if ('width' in scaleNode.inputs && 'height' in scaleNode.inputs) {
+          modifiedWorkflow[scaleNodeId].inputs.width = params.width;
+          modifiedWorkflow[scaleNodeId].inputs.height = params.height;
         }
-      } else {
-        console.warn('No ImageScale or ImageScaleBy node found in workflow - scale factor will not be injected');
       }
     }
 
