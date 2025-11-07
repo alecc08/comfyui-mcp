@@ -179,9 +179,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'resize_image',
         description:
-          'Resize or upscale an image to different dimensions. ' +
-          'Use "upscale" method with scale_factor for high-quality AI upscaling (2x, 4x, etc). ' +
-          'Use "downscale" method with target dimensions for simple resizing. ' +
+          'Resize or upscale an image to specific dimensions. ' +
+          'Automatically detects whether to upscale (using high-quality AI upscaling) or downscale (simple resize) ' +
+          'by comparing target dimensions to source image dimensions. ' +
           'Returns a prompt_id - use get_image to retrieve the result.',
         inputSchema: {
           type: 'object',
@@ -190,29 +190,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'string',
               description: 'Absolute path to the source image file on the local filesystem',
             },
-            method: {
-              type: 'string',
-              enum: ['upscale', 'downscale'],
-              description: 'Resize method: "upscale" for quality AI upscaling, "downscale" for simple resizing',
-            },
-            scale_factor: {
+            width: {
               type: 'number',
-              description: 'Scaling multiplier (e.g., 2.0 = 2x, 4.0 = 4x). Required for upscale, optional for downscale.',
+              description: 'Target width in pixels',
             },
-            target_width: {
+            height: {
               type: 'number',
-              description: 'Target width in pixels (for downscale method)',
-            },
-            target_height: {
-              type: 'number',
-              description: 'Target height in pixels (for downscale method)',
+              description: 'Target height in pixels',
             },
             workflow_name: {
               type: 'string',
-              description: 'Optional: name of the workflow file to use',
+              description: 'Optional: name of the workflow file to use (overrides auto-detection)',
             },
           },
-          required: ['image_path', 'method'],
+          required: ['image_path', 'width', 'height'],
         },
       },
       {

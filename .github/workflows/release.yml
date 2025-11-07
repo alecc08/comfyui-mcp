@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Get merged PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get the PR number from the merge commit message
+          PR_NUMBER=$(gh pr list --search "${{ github.sha }}" --state merged --json number --jq '.[0].number')
+
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "No merged PR found, skipping release"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Found merged PR #$PR_NUMBER"
+
+      - name: Determine version bump
+        if: steps.pr.outputs.skip != 'true'
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${{ steps.pr.outputs.pr_number }}"
+
+          # Get PR labels
+          LABELS=$(gh pr view $PR_NUMBER --json labels --jq '.labels[].name')
+          echo "PR Labels: $LABELS"
+
+          # Determine version bump type based on labels
+          BUMP_TYPE="patch"
+
+          if echo "$LABELS" | grep -q "major"; then
+            BUMP_TYPE="major"
+          elif echo "$LABELS" | grep -q "minor"; then
+            BUMP_TYPE="minor"
+          fi
+
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "Version bump type: $BUMP_TYPE"
+
+      - name: Install dependencies
+        if: steps.pr.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Build
+        if: steps.pr.outputs.skip != 'true'
+        run: npm run build
+
+      - name: Bump version and create tag
+        if: steps.pr.outputs.skip != 'true'
+        id: bump
+        run: |
+          BUMP_TYPE="${{ steps.version.outputs.bump_type }}"
+
+          # Bump version in package.json and create git tag
+          npm version $BUMP_TYPE -m "chore: bump version to %s"
+
+          # Get the new version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "new_version=v$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: v$NEW_VERSION"
+
+      - name: Push changes and tag
+        if: steps.pr.outputs.skip != 'true'
+        run: |
+          git push origin main --follow-tags
+
+      - name: Create GitHub Release
+        if: steps.pr.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG_NAME="${{ steps.bump.outputs.new_version }}"
+
+          # Create release with auto-generated notes
+          gh release create "$TAG_NAME" \
+            --title "$TAG_NAME" \
+            --generate-notes \
+            --verify-tag

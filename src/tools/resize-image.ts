@@ -1,4 +1,6 @@
 import { randomBytes } from 'crypto';
+import fs from 'fs/promises';
+import { imageSize } from 'image-size';
 import type { ComfyUIClient } from '../comfyui/client.js';
 import type { WorkflowLoader } from '../workflows/workflow-loader.js';
 import { ResizeImageInputSchema, isAbsolutePath } from '../utils/validation.js';
@@ -24,15 +26,36 @@ export async function resizeImage(
     throw new Error(`Image path must be absolute. Received: ${validatedInput.image_path}`);
   }
 
+  // Get source image dimensions
+  let sourceWidth: number;
+  let sourceHeight: number;
+  try {
+    const buffer = await fs.readFile(validatedInput.image_path);
+    const dimensions = imageSize(new Uint8Array(buffer));
+    if (!dimensions.width || !dimensions.height) {
+      throw new Error('Could not determine image dimensions');
+    }
+    sourceWidth = dimensions.width;
+    sourceHeight = dimensions.height;
+    console.error(`Source image dimensions: ${sourceWidth}x${sourceHeight}`);
+  } catch (error) {
+    throw new Error(`Failed to read image dimensions: ${(error as Error).message}`);
+  }
+
   // Upload image to ComfyUI
   console.error(`Uploading image from: ${validatedInput.image_path}`);
   const uploadResult = await client.uploadImage(validatedInput.image_path);
   console.error(`Image uploaded successfully: ${uploadResult.name}`);
 
-  // Determine workflow name based on method if not specified
+  // Automatically determine whether to upscale or downscale based on dimensions
+  const isUpscaling = validatedInput.width > sourceWidth || validatedInput.height > sourceHeight;
+  const method = isUpscaling ? 'upscale' : 'downscale';
+  console.error(`Auto-detected method: ${method} (${sourceWidth}x${sourceHeight} → ${validatedInput.width}x${validatedInput.height})`);
+
+  // Determine workflow name based on auto-detected method if not specified
   let workflowName = validatedInput.workflow_name;
   if (!workflowName) {
-    workflowName = validatedInput.method === 'upscale'
+    workflowName = method === 'upscale'
       ? 'upscale_workflow.json'
       : 'resize_workflow.json';
   }
@@ -43,9 +66,8 @@ export async function resizeImage(
   // Inject parameters
   const modifiedWorkflow = workflowLoader.injectParameters(baseWorkflow, {
     input_image: uploadResult.name,
-    scale_factor: validatedInput.scale_factor,
-    width: validatedInput.target_width,
-    height: validatedInput.target_height,
+    width: validatedInput.width,
+    height: validatedInput.height,
   });
 
   // Generate unique client ID
@@ -57,9 +79,9 @@ export async function resizeImage(
   // Add to request history
   requestHistory.push({
     prompt_id: response.prompt_id,
-    prompt: `Resize (${validatedInput.method})`,
-    width: validatedInput.target_width || 0,
-    height: validatedInput.target_height || 0,
+    prompt: `Resize (${method}: ${sourceWidth}x${sourceHeight} → ${validatedInput.width}x${validatedInput.height})`,
+    width: validatedInput.width,
+    height: validatedInput.height,
     workflow_name: workflowName || workflowLoader.getDefaultWorkflow(),
     timestamp: new Date().toISOString(),
     status: 'queued',
