@@ -1,17 +1,16 @@
 import type { ComfyUIClient } from '../comfyui/client.js';
 import type { ImageData } from '../comfyui/types.js';
-import type { RequestHistoryEntry } from './get-request-history.js';
+import type { RequestHistoryEntry } from '../utils/history.js';
 import type { ImageServer } from '../http/image-server.js';
 import { GetImageInputSchema, validateFilename } from '../utils/validation.js';
-
-// Timeout constant: 15 minutes in milliseconds
-const GENERATION_TIMEOUT_MS = 15 * 60 * 1000;
+import { isTimedOut } from '../utils/timeout.js';
 
 export interface GetImageOutput {
   status: 'completed' | 'executing' | 'pending' | 'not_found' | 'failed';
   images?: ImageData[];
   queue_position?: number;
   queue_size?: number;
+  retry_after_seconds?: number;
   error?: string;
 }
 
@@ -28,17 +27,12 @@ export async function getImage(
   // Check for timeout in request history
   if (requestHistory) {
     const historyEntry = requestHistory.find((entry) => entry.prompt_id === promptId);
-    if (historyEntry) {
-      const requestTime = new Date(historyEntry.timestamp).getTime();
-      const currentTime = Date.now();
-      const elapsedTime = currentTime - requestTime;
-
-      if (elapsedTime > GENERATION_TIMEOUT_MS) {
-        return {
-          status: 'failed',
-          error: `Request timed out after ${Math.floor(elapsedTime / 1000 / 60)} minutes (max: 15 minutes)`,
-        };
-      }
+    if (historyEntry && isTimedOut(historyEntry.timestamp)) {
+      const elapsed = Math.floor((Date.now() - new Date(historyEntry.timestamp).getTime()) / 1000 / 60);
+      return {
+        status: 'failed',
+        error: `Request timed out after ${elapsed} minutes (max: 15 minutes)`,
+      };
     }
   }
 
@@ -66,11 +60,13 @@ export async function getImage(
               status: 'pending',
               queue_position: pendingPosition + 1,
               queue_size: queueStatus.queue_pending.length,
+              retry_after_seconds: 30,
             };
           } else {
             // In running queue
             return {
               status: 'executing',
+              retry_after_seconds: 30,
             };
           }
         }
@@ -85,6 +81,7 @@ export async function getImage(
         if (existsInOurHistory) {
           return {
             status: 'pending',
+            retry_after_seconds: 30,
           };
         }
       }
@@ -124,6 +121,7 @@ export async function getImage(
     if (!entry.status.completed) {
       return {
         status: 'executing',
+        retry_after_seconds: 30,
       };
     }
 

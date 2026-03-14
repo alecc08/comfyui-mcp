@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "comfyui": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/home/alec/projects/comfyui-mcp/dist/index.js"
+      ],
+      "env": {}
+    }
+  }
+}

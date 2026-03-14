@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 import type { ComfyUIClient } from '../comfyui/client.js';
 import type { WorkflowLoader } from '../workflows/workflow-loader.js';
 import { RemoveBackgroundInputSchema, isAbsolutePath } from '../utils/validation.js';
-import type { RequestHistoryEntry } from './get-request-history.js';
+import { type RequestHistoryEntry, recordHistoryEntry } from '../utils/history.js';
 
 export interface RemoveBackgroundOutput {
   prompt_id: string;
@@ -47,14 +47,12 @@ export async function removeBackground(
   const response = await client.queuePrompt(modifiedWorkflow, clientId);
 
   // Add to request history
-  requestHistory.push({
+  recordHistoryEntry(requestHistory, {
     prompt_id: response.prompt_id,
     prompt: 'Remove background',
     width: 0,
     height: 0,
     workflow_name: workflowName || workflowLoader.getDefaultWorkflow(),
-    timestamp: new Date().toISOString(),
-    status: 'queued',
     queue_position: response.number,
     image_path: validatedInput.image_path,
   });

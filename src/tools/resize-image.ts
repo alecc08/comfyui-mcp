@@ -4,7 +4,7 @@ import { imageSize } from 'image-size';
 import type { ComfyUIClient } from '../comfyui/client.js';
 import type { WorkflowLoader } from '../workflows/workflow-loader.js';
 import { ResizeImageInputSchema, isAbsolutePath } from '../utils/validation.js';
-import type { RequestHistoryEntry } from './get-request-history.js';
+import { type RequestHistoryEntry, recordHistoryEntry } from '../utils/history.js';
 
 export interface ResizeImageOutput {
   prompt_id: string;
@@ -77,14 +77,12 @@ export async function resizeImage(
   const response = await client.queuePrompt(modifiedWorkflow, clientId);
 
   // Add to request history
-  requestHistory.push({
+  recordHistoryEntry(requestHistory, {
     prompt_id: response.prompt_id,
     prompt: `Resize (${method}: ${sourceWidth}x${sourceHeight} → ${validatedInput.width}x${validatedInput.height})`,
     width: validatedInput.width,
     height: validatedInput.height,
     workflow_name: workflowName || workflowLoader.getDefaultWorkflow(),
-    timestamp: new Date().toISOString(),
-    status: 'queued',
     queue_position: response.number,
     image_path: validatedInput.image_path,
   });
