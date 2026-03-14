@@ -10,17 +10,17 @@ A Model Context Protocol (MCP) server that enables AI assistants to generate and
 This MCP server exposes seven powerful tools:
 
 **Image Generation:**
-- **`generate_image`**: Generate images from text prompts using any ComfyUI workflow
-- **`list_workflows`**: List all available workflow files in your workspace directory
+- **`comfyui_generate_image`**: Generate images from text prompts using any ComfyUI workflow
+- **`comfyui_list_workflows`**: List all available workflow files in your workspace directory
 
 **Image Processing:**
-- **`modify_image`**: Transform existing images with AI guidance (img2img)
-- **`resize_image`**: Upscale or downscale images with quality preservation
-- **`remove_background`**: Remove backgrounds from images, creating transparent cutouts
+- **`comfyui_modify_image`**: Transform existing images with AI guidance (img2img)
+- **`comfyui_resize_image`**: Upscale or downscale images with quality preservation
+- **`comfyui_remove_background`**: Remove backgrounds from images, creating transparent cutouts
 
 **Utilities:**
-- **`get_image`**: Retrieve generated/processed images by their prompt ID
-- **`get_request_history`**: View history of all requests with current status
+- **`comfyui_get_image`**: Retrieve generated/processed images by their prompt ID
+- **`comfyui_get_request_history`**: View history of all requests with current status
 
 The server communicates with a local ComfyUI instance via its REST API, handling workflow execution, image uploads, queue management, and image retrieval.
 
@@ -31,7 +31,7 @@ graph TB
     A[AI Assistant/LLM<br/>Claude, GPT, etc.] <-->|MCP Protocol<br/>stdio| B[ComfyUI MCP Server<br/>This Package]
     B <-->|HTTP API| C[ComfyUI Instance<br/>localhost:8188]
     C -->|Image Data| B
-    B -->|Cache to Disk| E[Image Cache<br/>./image_cache/]
+    B -->|Cache to Disk| E[Image Cache<br/>~/.cache/comfyui-mcp/]
     B <-->|HTTP Server<br/>localhost:8190| F[HTTP Image Proxy<br/>Built-in]
     F -->|Serve Images| E
     B -->|Image URLs| A
@@ -372,7 +372,7 @@ Edit your MCP client configuration file and add:
 | `COMFYUI_URL` | Base URL of your ComfyUI instance | `http://127.0.0.1:8188` |
 | `COMFYUI_WORKFLOW_DIR` | Directory containing your workflow JSON files | `<repo_root>/workflow_files` (relative to `dist/index.js`) |
 | `COMFYUI_MCP_HTTP_PORT` | Port for the built-in HTTP image proxy server | `8190` |
-| `COMFYUI_IMAGE_CACHE_DIR` | Directory for caching downloaded images | `./image_cache` |
+| `COMFYUI_IMAGE_CACHE_DIR` | Directory for caching downloaded images | `~/.cache/comfyui-mcp` |
 | `COMFYUI_RANDOMIZE_SEEDS` | Enable/disable automatic seed randomization for varied results | `true` (set to `false` to disable) |
 
 ### ComfyUI Setup
@@ -397,7 +397,7 @@ Edit your MCP client configuration file and add:
 
 ## Usage
 
-### Tool 1: `list_workflows`
+### Tool 1: `comfyui_list_workflows`
 
 List all available workflow files in your workspace directory. Shows which workflow is set as the default.
 
@@ -409,25 +409,27 @@ List all available workflow files in your workspace directory. Shows which workf
 ```
 
 **Response:**
-```
-Available workflows in /path/to/workflow_files:
-
-- default_workflow.json (default)
-- portrait.json
-- landscape.json
-- anime_style.json
-
-Default workflow: default_workflow.json
+```typescript
+{
+  workflows: [
+    { name: "default_workflow.json", is_default: true },
+    { name: "portrait.json", is_default: false },
+    { name: "landscape.json", is_default: false },
+    { name: "anime_style.json", is_default: false }
+  ],
+  default_workflow: "default_workflow.json",
+  total_count: 4
+}
 ```
 
 **Example:**
 ```
 User: What workflows are available?
-AI: [Calls list_workflows]
-Response: Lists all .json files in the workflow directory
+AI: [Calls comfyui_list_workflows]
+Response: JSON object listing all .json files in the workflow directory
 ```
 
-### Tool 2: `generate_image`
+### Tool 2: `comfyui_generate_image`
 
 Generate an image using a ComfyUI workflow with the specified parameters. You can optionally select which workflow to use.
 
@@ -460,15 +462,15 @@ Generate an image using a ComfyUI workflow with the specified parameters. You ca
 **Example:**
 ```
 User: Generate a portrait using the portrait workflow
-AI: [Calls generate_image with prompt="professional headshot portrait", workflow_name="portrait.json", width=768, height=1024]
+AI: [Calls comfyui_generate_image with prompt="professional headshot portrait", workflow_name="portrait.json", width=768, height=1024]
 Response: { prompt_id: "abc123", number: 1, status: "queued" }
 
 User: Generate an image of a mountain landscape (using default workflow)
-AI: [Calls generate_image with prompt="serene mountain landscape at sunset", width=1024, height=768]
+AI: [Calls comfyui_generate_image with prompt="serene mountain landscape at sunset", width=1024, height=768]
 Response: { prompt_id: "def456", number: 1, status: "queued" }
 ```
 
-### Tool 3: `get_image`
+### Tool 3: `comfyui_get_image`
 
 Retrieve a generated image by its prompt ID.
 
@@ -498,7 +500,7 @@ Retrieve a generated image by its prompt ID.
 **Example:**
 ```
 User: Get the image we just generated
-AI: [Calls get_image with prompt_id="abc123"]
+AI: [Calls comfyui_get_image with prompt_id="abc123"]
 Response: {
   status: "completed",
   images: [{
@@ -517,14 +519,15 @@ The image URL points to the built-in HTTP proxy server which:
 3. Serves subsequent requests from cache for fast access
 4. Works even if the MCP server is on a different machine than ComfyUI
 
-### Tool 4: `get_request_history`
+### Tool 4: `comfyui_get_request_history`
 
 Retrieve the history of all image generation requests made through this server. Includes workflow name, prompts, dimensions, and current status. Useful for recovering lost prompt IDs or reviewing past generations.
 
 **Input Schema:**
 ```typescript
 {
-  // No parameters required
+  limit?: number;   // Max entries to return (1–100, default: 50)
+  offset?: number;  // Skip this many entries for pagination (default: 0)
 }
 ```
 
@@ -542,14 +545,18 @@ Retrieve the history of all image generation requests made through this server. 
     status: string;              // Current status: "queued", "executing", "completed", "failed"
     queue_position?: number;     // Position in queue when submitted
   }];
-  total_requests: number;        // Total number of requests
+  total_count: number;           // Total number of requests ever made
+  limit: number;                 // Limit used for this page
+  offset: number;                // Offset used for this page
+  has_more: boolean;             // Whether more entries exist beyond this page
+  next_offset: number;           // Offset to use for the next page
 }
 ```
 
 **Example:**
 ```
 User: Show me my recent image generation requests
-AI: [Calls get_request_history]
+AI: [Calls comfyui_get_request_history]
 Response: {
   history: [
     {
@@ -574,13 +581,17 @@ Response: {
       queue_position: 1
     }
   ],
-  total_requests: 2
+  total_count: 2,
+  limit: 50,
+  offset: 0,
+  has_more: false,
+  next_offset: 50
 }
 ```
 
 **Note:** Request history is stored in memory and will be lost when the server restarts.
 
-### Tool 5: `modify_image`
+### Tool 5: `comfyui_modify_image`
 
 Transform an existing image using AI-guided modification (img2img). Takes a source image and generates a new version based on your prompt, with control over how much the image changes.
 
@@ -615,14 +626,14 @@ Transform an existing image using AI-guided modification (img2img). Takes a sour
 **Example:**
 ```
 User: Transform this photo of a cat into a watercolor painting
-AI: [Calls modify_image with
+AI: [Calls comfyui_modify_image with
      image_path="C:/Users/me/photos/cat.jpg",
      prompt="watercolor painting of a cat",
      denoise_strength=0.7]
 Response: { prompt_id: "xyz789", number: 1, status: "queued" }
 
 User: Make this portrait look professional
-AI: [Calls modify_image with
+AI: [Calls comfyui_modify_image with
      image_path="C:/Users/me/photos/portrait.jpg",
      prompt="professional studio portrait, enhanced lighting",
      negative_prompt="amateur, poor lighting",
@@ -637,25 +648,24 @@ Your `img2img_workflow.json` must include:
 - `KSampler` node (for generation with denoise control)
 - `VAEDecode` and `SaveImage` nodes (for output)
 
-### Tool 6: `resize_image`
+### Tool 6: `comfyui_resize_image`
 
-Resize or upscale images with quality preservation. Supports both high-quality AI upscaling and simple downscaling.
+Resize or upscale images with quality preservation. Automatically detects whether to use AI upscaling or simple downscaling by comparing the target dimensions to the source image dimensions.
 
 **Input Schema:**
 ```typescript
 {
-  image_path: string;           // Absolute path to source image file
-  method: "upscale" | "downscale";  // Resize method
-  scale_factor?: number;        // Multiplier (e.g., 2.0 = 2x, 4.0 = 4x)
-  target_width?: number;        // Target width (for downscale)
-  target_height?: number;       // Target height (for downscale)
-  workflow_name?: string;       // Optional: custom workflow
+  image_path: string;     // Absolute path to source image file
+  width: number;          // Target width in pixels
+  height: number;         // Target height in pixels
+  workflow_name?: string; // Optional: override auto-selected workflow
 }
 ```
 
-**Method Requirements:**
-- **Upscale**: Requires `scale_factor` (uses AI upscaling models)
-- **Downscale**: Requires either `scale_factor` OR `(target_width AND target_height)`
+**Auto-detection logic:**
+- If target dimensions are **larger** than source → uses `upscale_workflow.json` (AI upscaling)
+- If target dimensions are **smaller** than source → uses `resize_workflow.json` (simple downscale)
+- Pass `workflow_name` to override auto-detection
 
 **Response:**
 ```typescript
@@ -668,27 +678,19 @@ Resize or upscale images with quality preservation. Supports both high-quality A
 
 **Examples:**
 ```
-User: Upscale this image to 4x resolution
-AI: [Calls resize_image with
-     image_path="C:/Users/me/images/small.jpg",
-     method="upscale",
-     scale_factor=4.0]
+User: Upscale this image to 2048x2048
+AI: [Calls comfyui_resize_image with
+     image_path="/home/me/images/small.jpg",
+     width=2048, height=2048]
 Response: { prompt_id: "def654", number: 1, status: "queued" }
+# Auto-detected: upscale (source is smaller than target)
 
 User: Resize this image to 512x512
-AI: [Calls resize_image with
-     image_path="C:/Users/me/images/large.png",
-     method="downscale",
-     target_width=512,
-     target_height=512]
+AI: [Calls comfyui_resize_image with
+     image_path="/home/me/images/large.png",
+     width=512, height=512]
 Response: { prompt_id: "ghi321", number: 1, status: "queued" }
-
-User: Downscale this to half size
-AI: [Calls resize_image with
-     image_path="C:/Users/me/images/huge.jpg",
-     method="downscale",
-     scale_factor=0.5]
-Response: { prompt_id: "jkl987", number: 1, status: "queued" }
+# Auto-detected: downscale (source is larger than target)
 ```
 
 **Workflow Requirements:**
@@ -701,10 +703,10 @@ For upscaling (`upscale_workflow.json`):
 
 For downscaling (`resize_workflow.json`):
 - `LoadImage` node
-- `ImageScale` or `ImageScaleBy` node
+- `ImageScale` node
 - `SaveImage` node
 
-### Tool 7: `remove_background`
+### Tool 7: `comfyui_remove_background`
 
 Remove the background from an image, creating a transparent PNG with only the subject. Perfect for product photos, profile pictures, and cutouts.
 
@@ -728,12 +730,12 @@ Remove the background from an image, creating a transparent PNG with only the su
 **Examples:**
 ```
 User: Remove the background from this product photo
-AI: [Calls remove_background with
+AI: [Calls comfyui_remove_background with
      image_path="C:/Users/me/products/shoe.jpg"]
 Response: { prompt_id: "mno456", number: 1, status: "queued" }
 
 User: Create a cutout of this person
-AI: [Calls remove_background with
+AI: [Calls comfyui_remove_background with
      image_path="C:/Users/me/photos/person.png"]
 Response: { prompt_id: "pqr123", number: 1, status: "queued" }
 ```
@@ -760,7 +762,7 @@ All image processing tools require **absolute file paths**:
 This server follows a layered architecture:
 
 1. **MCP Layer**: Handles protocol communication via stdio transport
-2. **Tool Layer**: Implements image generation (`generate_image`), image processing (`modify_image`, `resize_image`, `remove_background`), and utility tools (`get_image`, `get_request_history`, `list_workflows`)
+2. **Tool Layer**: Implements image generation (`comfyui_generate_image`), image processing (`comfyui_modify_image`, `comfyui_resize_image`, `comfyui_remove_background`), and utility tools (`comfyui_get_image`, `comfyui_get_request_history`, `comfyui_list_workflows`)
 3. **HTTP Proxy Layer**: Built-in Express server for efficient image delivery via URLs
 4. **Image Cache Layer**: Disk-based caching system for downloaded images
 5. **ComfyUI Client Layer**: Manages HTTP communication with ComfyUI, including image uploads
@@ -904,11 +906,11 @@ When using tools, you can specify which workflow to use:
 - **List available**: Use the `list_workflows` tool to see all available workflows
 
 **Default workflow mapping:**
-- `generate_image` → `default_workflow.json`
-- `modify_image` → `img2img_workflow.json`
-- `resize_image` (upscale) → `upscale_workflow.json`
-- `resize_image` (downscale) → `resize_workflow.json`
-- `remove_background` → `remove_background_workflow.json`
+- `comfyui_generate_image` → `default_workflow.json`
+- `comfyui_modify_image` → `img2img_workflow.json`
+- `comfyui_resize_image` (upscale auto-detected) → `upscale_workflow.json`
+- `comfyui_resize_image` (downscale auto-detected) → `resize_workflow.json`
+- `comfyui_remove_background` → `remove_background_workflow.json`
 
 ### Parameter Injection
 
@@ -944,10 +946,9 @@ The server uses an intelligent parameter injection strategy to work with a wide 
    - Injects `denoise_strength` (0.0-1.0) into the node's `denoise` parameter
    - Controls how much the image changes vs. stays the same
 
-6. **Scale Factor Injection** (for resizing)
-   - Finds `ImageScale` or `ImageScaleBy` node
-   - For `ImageScaleBy`: injects `scale_factor` directly
-   - For `ImageScale`: calculates target dimensions from scale factor
+6. **Target Dimensions Injection** (for resizing)
+   - Finds `ImageScale` node
+   - Injects `width` and `height` directly into the node's inputs
 
 7. **Upscale Method Injection** (for upscaling)
    - Finds `UpscaleModelLoader` node
@@ -1003,8 +1004,7 @@ Here's how a typical workflow is structured and how parameters are injected:
 | `EmptyLatentImage` | Latent image initialization (SD1.5/SDXL) | `width`, `height` |
 | `EmptySD3LatentImage` | Latent image initialization (SD3) | `width`, `height` |
 | `LoadImage` | Image input for processing | `image` (uploaded filename) |
-| `ImageScale` | Resize to absolute dimensions | `width`, `height` (calculated from scale_factor) |
-| `ImageScaleBy` | Resize by scale factor | `scale_by` |
+| `ImageScale` | Resize to target dimensions | `width`, `height` |
 | `UpscaleModelLoader` | Load upscale model | `model_name` |
 
 #### Requirements for Your Workflows
@@ -1024,15 +1024,15 @@ Different tools have different requirements:
 4. `CLIPTextEncode` nodes for prompts
 5. `VAEDecode` and `SaveImage` for output
 
-**Upscaling** (`resize_image` with method="upscale"):
+**Upscaling** (`comfyui_resize_image` when target > source):
 1. `LoadImage` node for input image
 2. `UpscaleModelLoader` with upscale models installed
 3. Upscale nodes (e.g., `ImageUpscaleWithModel`)
 4. `SaveImage` for output
 
-**Resizing** (`resize_image` with method="downscale"):
+**Resizing** (`comfyui_resize_image` when target < source):
 1. `LoadImage` node for input image
-2. `ImageScale` or `ImageScaleBy` node
+2. `ImageScale` node
 3. `SaveImage` for output
 
 **Background Removal** (`remove_background`):
@@ -1059,7 +1059,8 @@ npm run dev
 
 ### Testing with MCP Inspector
 ```bash
-npx @modelcontextprotocol/inspector npm start
+# IMPORTANT: use node directly, not npm start
+npx @modelcontextprotocol/inspector node dist/index.js
 ```
 
 ## API Compatibility

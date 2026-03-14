@@ -294,7 +294,6 @@ npm start
            "COMFYUI_URL": "http://127.0.0.1:8188",
            "COMFYUI_WORKFLOW_DIR": "C:\\Users\\YOUR-USERNAME\\Documents\\projects\\comfyui-mcp\\workflow_files",
            "COMFYUI_MCP_HTTP_PORT": "8190",
-           "COMFYUI_IMAGE_CACHE_DIR": "C:\\Users\\YOUR-USERNAME\\Documents\\projects\\comfyui-mcp\\image_cache",
            "COMFYUI_RANDOMIZE_SEEDS": "true"
          }
        }
@@ -308,7 +307,7 @@ npm start
 
 5. **Verify the connection:**
    - Look for the 🔌 MCP icon in Claude Desktop
-   - Click it and verify "comfyui" appears with tools like `generate_image`
+   - Click it and verify "comfyui" appears with tools like `comfyui_generate_image`
 
 ### Option B: Cline (VS Code Extension)
 
@@ -327,7 +326,7 @@ npm start
 | `COMFYUI_URL` | `http://127.0.0.1:8188` | ComfyUI instance URL |
 | `COMFYUI_WORKFLOW_DIR` | `./workflow_files` | Directory containing workflow JSON files |
 | `COMFYUI_MCP_HTTP_PORT` | `8190` | Port for the HTTP image proxy server |
-| `COMFYUI_IMAGE_CACHE_DIR` | `./image_cache` | Directory for caching downloaded images |
+| `COMFYUI_IMAGE_CACHE_DIR` | `~/.cache/comfyui-mcp` | Directory for caching downloaded images |
 | `COMFYUI_RANDOMIZE_SEEDS` | `true` | Enable/disable seed randomization |
 
 ---

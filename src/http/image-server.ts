@@ -156,6 +156,14 @@ export class ImageServer {
     }
   }
 
+  getPort(): number {
+    return this.port;
+  }
+
+  setPort(port: number): void {
+    this.port = port;
+  }
+
   /**
    * Get the base URL for the image server
    */

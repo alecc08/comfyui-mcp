@@ -1,26 +1,21 @@
-import { z } from 'zod';
 import type { WorkflowLoader } from '../workflows/workflow-loader.js';
 
-export const listWorkflowsSchema = z.object({});
+export interface ListWorkflowsOutput {
+  workflows: Array<{ name: string; is_default: boolean }>;
+  default_workflow: string;
+  total_count: number;
+}
 
-export async function listWorkflows(workflowLoader: WorkflowLoader): Promise<string> {
+export async function listWorkflows(workflowLoader: WorkflowLoader): Promise<ListWorkflowsOutput> {
   try {
-    const workflows = await workflowLoader.listWorkflows();
+    const names = await workflowLoader.listWorkflows();
     const defaultWorkflow = workflowLoader.getDefaultWorkflow();
-    const workspaceDir = workflowLoader.getWorkspaceDir();
 
-    if (workflows.length === 0) {
-      return `No workflow files found in ${workspaceDir}`;
-    }
-
-    const workflowList = workflows
-      .map(name => {
-        const isDefault = name === defaultWorkflow;
-        return `- ${name}${isDefault ? ' (default)' : ''}`;
-      })
-      .join('\n');
-
-    return `Available workflows in ${workspaceDir}:\n\n${workflowList}\n\nDefault workflow: ${defaultWorkflow}`;
+    return {
+      workflows: names.map((name) => ({ name, is_default: name === defaultWorkflow })),
+      default_workflow: defaultWorkflow,
+      total_count: names.length,
+    };
   } catch (error) {
     throw new Error(`Failed to list workflows: ${(error as Error).message}`);
   }

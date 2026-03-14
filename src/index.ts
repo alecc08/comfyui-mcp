@@ -1,22 +1,27 @@
 #!/usr/bin/env node
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 import { loadConfig } from './config/config.js';
 import { ComfyUIClient } from './comfyui/client.js';
 import { WorkflowLoader } from './workflows/workflow-loader.js';
 import { ImageServer } from './http/image-server.js';
 import { generateImage } from './tools/generate-image.js';
 import { getImage } from './tools/get-image.js';
-import { getRequestHistory, type RequestHistoryEntry } from './tools/get-request-history.js';
+import { getRequestHistory } from './tools/get-request-history.js';
 import { listWorkflows } from './tools/list-workflows.js';
 import { modifyImage } from './tools/modify-image.js';
 import { resizeImage } from './tools/resize-image.js';
 import { removeBackground } from './tools/remove-background.js';
+import { type RequestHistoryEntry } from './utils/history.js';
+import {
+  GenerateImageInputSchema,
+  GetImageInputSchema,
+  ModifyImageInputSchema,
+  ResizeImageInputSchema,
+  RemoveBackgroundInputSchema,
+  GetRequestHistoryInputSchema,
+} from './utils/validation.js';
 
 // Load configuration
 const config = loadConfig();
@@ -44,311 +49,155 @@ const imageServer = new ImageServer(
 const requestHistory: RequestHistoryEntry[] = [];
 
 // Create MCP server
-const server = new Server(
-  {
-    name: config.mcp.name,
-    version: config.mcp.version,
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  },
+const server = new McpServer({
+  name: config.mcp.name,
+  version: config.mcp.version,
+});
+
+// Register tools
+server.tool(
+  'comfyui_generate_image',
+  'Generate an image from a text prompt using ComfyUI.',
+  GenerateImageInputSchema.shape,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  async (args) => {
+    try {
+      const result = await generateImage(args, comfyClient, workflowLoader, requestHistory);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('Error in comfyui_generate_image:', msg);
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
+    }
+  }
 );
 
-// Register tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'generate_image',
-        description:
-          'Generate an image using ComfyUI with the specified prompt and dimensions. ' +
-          'The server loads a workflow JSON file and injects your parameters before queuing it to ComfyUI.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            prompt: {
-              type: 'string',
-              description: 'Text description of the image to generate',
-            },
-            negative_prompt: {
-              type: 'string',
-              description: 'Optional: negative prompt to guide what should NOT be in the image',
-            },
-            width: {
-              type: 'number',
-              description: 'Image width in pixels (default: 512)',
-              default: 512,
-            },
-            height: {
-              type: 'number',
-              description: 'Image height in pixels (default: 512)',
-              default: 512,
-            },
-            workflow_name: {
-              type: 'string',
-              description: 'Optional: name of the workflow file to use (e.g., "default_workflow.json"). If not specified, uses default_workflow.json',
-            },
-          },
-          required: ['prompt'],
-        },
-      },
-      {
-        name: 'get_image',
-        description:
-          'Retrieve a generated image by its prompt ID. ' +
-          'Returns HTTP URLs to fetch the images from the local image server.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            prompt_id: {
-              type: 'string',
-              description: 'The prompt_id returned from generate_image',
-            },
-          },
-          required: ['prompt_id'],
-        },
-      },
-      {
-        name: 'get_request_history',
-        description:
-          'Retrieve the history of image generation requests made through this server. ' +
-          'Shows all previous requests with their prompts, dimensions, timestamps, and current status. ' +
-          'Useful for recovering lost prompt IDs or reviewing past generations.',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-          required: [],
-        },
-      },
-      {
-        name: 'list_workflows',
-        description:
-          'List all available workflow files in the workflow workspace directory. ' +
-          'Shows which workflow is configured as the default.',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-          required: [],
-        },
-      },
-      {
-        name: 'modify_image',
-        description:
-          'Modify an existing image using AI-guided transformation (img2img). ' +
-          'Takes a source image and generates a new version based on your prompt. ' +
-          'Use denoise_strength to control how much the image changes (0.0=no change, 1.0=completely new). ' +
-          'Returns a prompt_id - use get_image to retrieve the result.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            image_path: {
-              type: 'string',
-              description: 'Absolute path to the source image file on the local filesystem',
-            },
-            prompt: {
-              type: 'string',
-              description: 'Text description of the desired transformation',
-            },
-            negative_prompt: {
-              type: 'string',
-              description: 'Optional: what to avoid in the transformation',
-            },
-            denoise_strength: {
-              type: 'number',
-              description: 'How much to change the image (0.0-1.0, default: 0.75). Lower values preserve more of the original.',
-              default: 0.75,
-            },
-            width: {
-              type: 'number',
-              description: 'Optional: output image width in pixels',
-            },
-            height: {
-              type: 'number',
-              description: 'Optional: output image height in pixels',
-            },
-            workflow_name: {
-              type: 'string',
-              description: 'Optional: name of the img2img workflow file (default: img2img_workflow.json)',
-            },
-          },
-          required: ['image_path', 'prompt'],
-        },
-      },
-      {
-        name: 'resize_image',
-        description:
-          'Resize or upscale an image to specific dimensions. ' +
-          'Automatically detects whether to upscale (using high-quality AI upscaling) or downscale (simple resize) ' +
-          'by comparing target dimensions to source image dimensions. ' +
-          'Returns a prompt_id - use get_image to retrieve the result.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            image_path: {
-              type: 'string',
-              description: 'Absolute path to the source image file on the local filesystem',
-            },
-            width: {
-              type: 'number',
-              description: 'Target width in pixels',
-            },
-            height: {
-              type: 'number',
-              description: 'Target height in pixels',
-            },
-            workflow_name: {
-              type: 'string',
-              description: 'Optional: name of the workflow file to use (overrides auto-detection)',
-            },
-          },
-          required: ['image_path', 'width', 'height'],
-        },
-      },
-      {
-        name: 'remove_background',
-        description:
-          'Remove the background from an image, leaving only the subject with transparency. ' +
-          'Useful for creating cutouts, product photos, profile pictures, etc. ' +
-          'Returns a prompt_id - use get_image to retrieve the result.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            image_path: {
-              type: 'string',
-              description: 'Absolute path to the source image file on the local filesystem',
-            },
-            workflow_name: {
-              type: 'string',
-              description: 'Optional: name of the background removal workflow file (default: remove_background_workflow.json)',
-            },
-          },
-          required: ['image_path'],
-        },
-      },
-    ],
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  try {
-    if (name === 'generate_image') {
-      const result = await generateImage(args, comfyClient, workflowLoader, requestHistory);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } else if (name === 'get_image') {
-      const result = await getImage(args, comfyClient, imageServer, requestHistory);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } else if (name === 'get_request_history') {
-      const result = await getRequestHistory(requestHistory, comfyClient);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } else if (name === 'list_workflows') {
-      const result = await listWorkflows(workflowLoader);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: result,
-          },
-        ],
-      };
-    } else if (name === 'modify_image') {
+server.tool(
+  'comfyui_modify_image',
+  'Modify an existing image via img2img. Use denoise_strength (0.0–1.0) to control how much changes.',
+  ModifyImageInputSchema.shape,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  async (args) => {
+    try {
       const result = await modifyImage(args, comfyClient, workflowLoader, requestHistory);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } else if (name === 'resize_image') {
-      const result = await resizeImage(args, comfyClient, workflowLoader, requestHistory);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } else if (name === 'remove_background') {
-      const result = await removeBackground(args, comfyClient, workflowLoader, requestHistory);
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    } else {
-      throw new Error(`Unknown tool: ${name}`);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('Error in comfyui_modify_image:', msg);
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
     }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
-
-    // Log full error to stderr for debugging
-    console.error(`Error in tool '${name}':`, errorMessage);
-    if (errorStack) {
-      console.error('Stack trace:', errorStack);
-    }
-
-    // Return user-friendly error with details
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify(
-            {
-              error: errorMessage,
-              tool: name,
-              details: 'Check server logs for more information',
-            },
-            null,
-            2
-          ),
-        },
-      ],
-      isError: true,
-    };
   }
-});
+);
+
+server.tool(
+  'comfyui_resize_image',
+  'Resize an image; auto-selects AI upscaling or simple downscale based on target vs source dimensions.',
+  ResizeImageInputSchema.shape,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  async (args) => {
+    try {
+      const result = await resizeImage(args, comfyClient, workflowLoader, requestHistory);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('Error in comfyui_resize_image:', msg);
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
+    }
+  }
+);
+
+server.tool(
+  'comfyui_remove_background',
+  'Remove the background from an image, leaving the subject with transparency.',
+  RemoveBackgroundInputSchema.shape,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  async (args) => {
+    try {
+      const result = await removeBackground(args, comfyClient, workflowLoader, requestHistory);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('Error in comfyui_remove_background:', msg);
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
+    }
+  }
+);
+
+server.tool(
+  'comfyui_get_image',
+  'Poll for completion of a queued job and retrieve image URLs. If status is "pending" or "executing", wait at least 30 seconds before polling again — image generation takes time.',
+  GetImageInputSchema.shape,
+  { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  async (args) => {
+    try {
+      const result = await getImage(args, comfyClient, imageServer, requestHistory);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('Error in comfyui_get_image:', msg);
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
+    }
+  }
+);
+
+server.tool(
+  'comfyui_get_request_history',
+  'List past image generation requests with current status.',
+  GetRequestHistoryInputSchema.shape,
+  { readOnlyHint: true, idempotentHint: false, openWorldHint: false },
+  async (args) => {
+    try {
+      const result = await getRequestHistory(args, requestHistory, comfyClient);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('Error in comfyui_get_request_history:', msg);
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
+    }
+  }
+);
+
+server.tool(
+  'comfyui_list_workflows',
+  'List available workflow files in the workspace directory.',
+  {},
+  { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  async () => {
+    try {
+      const result = await listWorkflows(workflowLoader);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('Error in comfyui_list_workflows:', msg);
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
+    }
+  }
+);
 
 // Start the server
 async function main() {
-  // Start HTTP image server
-  try {
-    await imageServer.start();
+  // Start HTTP image server, retrying on port conflicts
+  const MAX_PORT_ATTEMPTS = 10;
+  let started = false;
+  for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
+    try {
+      await imageServer.start();
+      started = true;
+      break;
+    } catch (error) {
+      const msg = (error as Error).message;
+      if (msg.includes('already in use') && attempt < MAX_PORT_ATTEMPTS - 1) {
+        imageServer.setPort(imageServer.getPort() + 1);
+        console.error(`Port in use, trying ${imageServer.getPort()}...`);
+      } else {
+        console.error(`Failed to start image server: ${msg}`);
+        process.exit(1);
+      }
+    }
+  }
+  if (started) {
     console.error(`Image server started on ${imageServer.getBaseUrl()}`);
     console.error(`Image cache directory: ${config.http.cacheDir}`);
-  } catch (error) {
-    console.error(`Failed to start image server: ${(error as Error).message}`);
-    process.exit(1);
   }
 
   // Check ComfyUI connectivity
@@ -357,7 +206,6 @@ async function main() {
     console.error(
       `Warning: Cannot connect to ComfyUI at ${config.comfyui.baseUrl}. Please ensure ComfyUI is running.`,
     );
-    // Continue anyway - the error will be caught when tools are called
   }
 
   // Verify workflow workspace directory exists
@@ -370,7 +218,6 @@ async function main() {
   } catch (error) {
     console.error(`Warning: Failed to access workflow workspace: ${(error as Error).message}`);
     console.error(`Workspace directory: ${config.workflow.workspaceDir}`);
-    // Continue anyway - the error will be caught when tools are called
   }
 
   const transport = new StdioServerTransport();

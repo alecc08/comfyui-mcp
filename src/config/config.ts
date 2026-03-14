@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
+import os from 'os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -42,7 +43,7 @@ export function loadConfig(): Config {
     },
     http: {
       port: parseInt(process.env.COMFYUI_MCP_HTTP_PORT || '8190', 10),
-      cacheDir: process.env.COMFYUI_IMAGE_CACHE_DIR || resolve(process.cwd(), 'image_cache'),
+      cacheDir: process.env.COMFYUI_IMAGE_CACHE_DIR || resolve(os.homedir(), '.cache', 'comfyui-mcp'),
     },
   };
 

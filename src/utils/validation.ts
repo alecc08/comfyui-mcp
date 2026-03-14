@@ -60,6 +60,16 @@ export const RemoveBackgroundInputSchema = z.object({
 export type RemoveBackgroundInput = z.infer<typeof RemoveBackgroundInputSchema>;
 
 /**
+ * Schema for get_request_history input
+ */
+export const GetRequestHistoryInputSchema = z.object({
+  limit: z.number().int().positive().max(100).optional().default(50),
+  offset: z.number().int().min(0).optional().default(0),
+});
+
+export type GetRequestHistoryInput = z.infer<typeof GetRequestHistoryInputSchema>;
+
+/**
  * Sanitize prompt text to prevent potential issues
  */
 export function sanitizePrompt(prompt: string): string {
