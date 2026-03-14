@@ -31,20 +31,12 @@ graph TB
     A[AI Assistant/LLM<br/>Claude, GPT, etc.] <-->|MCP Protocol<br/>stdio| B[ComfyUI MCP Server<br/>This Package]
     B <-->|HTTP API| C[ComfyUI Instance<br/>localhost:8188]
     C -->|Image Data| B
-    B -->|Cache to Disk| E[Image Cache<br/>~/.cache/comfyui-mcp/]
+    B -->|Cache to Disk| E[Image Cache<br/>./image_cache/]
     B <-->|HTTP Server<br/>localhost:8190| F[HTTP Image Proxy<br/>Built-in]
     F -->|Serve Images| E
     B -->|Image URLs| A
-    A -->|Fetch Images| F
-    B -->|Store| D[(Request History<br/>In-Memory)]
-    D -->|Retrieve| B
-
-    style A fill:#1a5490,stroke:#0d3a6b,color:#fff
-    style B fill:#d68910,stroke:#9c6508,color:#fff
-    style C fill:#7030a0,stroke:#501d6e,color:#fff
-    style D fill:#2d7d2d,stroke:#1e5a1e,color:#fff
-    style E fill:#c45100,stroke:#8a3800,color:#fff
-    style F fill:#0066aa,stroke:#004477,color:#fff
+    A -->|HTTP| D[Image Proxy :8190]
+    D -->|Fetch & Cache| C
 ```
 
 **How it works:**
