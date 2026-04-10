@@ -720,11 +720,3 @@ Contributions welcome! Please:
 
 - **MCP Docs**: [modelcontextprotocol.io](https://modelcontextprotocol.io)
 - **ComfyUI Docs**: [docs.comfy.org](https://docs.comfy.org)
-
-</content>
-</function>
-</tool_call>
-<tool_call>
-<function=bash>
-<parameter=command>
-git add -A && git status
