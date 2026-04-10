@@ -1,16 +1,45 @@
 import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
-import type { ComfyUIWorkflow, WorkflowNode } from '../comfyui/types.js';
+import type { ComfyUIWorkflow } from '../comfyui/types.js';
 
-export interface WorkflowParameters {
+export type Mode = 'txt2img' | 'img2img' | 'post-process';
+
+export interface GenerateOptions {
   prompt?: string;
   negative_prompt?: string;
+  input_image?: string;       // uploaded filename
+  denoise_strength?: number;
   width?: number;
   height?: number;
-  // Image processing parameters
-  input_image?: string; // Filename from ComfyUI upload (for LoadImage nodes)
-  denoise_strength?: number; // For img2img (KSampler.denoise)
-  upscale_method?: string; // For UpscaleModelLoader nodes
+  remove_background?: boolean;
+}
+
+export interface PreparedWorkflow {
+  workflow: ComfyUIWorkflow;
+  mode: Mode;
+}
+
+/**
+ * Calculate aspect-ratio-aware generation dimensions targeting ~1M total pixels.
+ */
+export function calculateGenerationDimensions(
+  targetWidth: number,
+  targetHeight: number,
+  nativeRes: number = 1024
+): { genWidth: number; genHeight: number } {
+  const ratio = targetWidth / targetHeight;
+  let genHeight = Math.sqrt((nativeRes * nativeRes) / ratio);
+  let genWidth = ratio * genHeight;
+
+  // Round to nearest multiple of 64
+  genWidth = Math.round(genWidth / 64) * 64;
+  genHeight = Math.round(genHeight / 64) * 64;
+
+  // Clamp to 512-2048
+  genWidth = Math.max(512, Math.min(2048, genWidth));
+  genHeight = Math.max(512, Math.min(2048, genHeight));
+
+  return { genWidth, genHeight };
 }
 
 export class WorkflowLoader {
@@ -21,7 +50,7 @@ export class WorkflowLoader {
 
   constructor(
     workspaceDir: string,
-    defaultWorkflow: string = 'default_workflow.json',
+    defaultWorkflow: string = 'workflow.json',
     randomizeSeeds: boolean = true
   ) {
     this.workspaceDir = workspaceDir;
@@ -50,7 +79,6 @@ export class WorkflowLoader {
   async loadWorkflow(workflowName?: string): Promise<ComfyUIWorkflow> {
     const name = workflowName || this.defaultWorkflow;
 
-    // Check cache first
     if (this.workflowCache.has(name)) {
       return this.workflowCache.get(name)!;
     }
@@ -60,7 +88,6 @@ export class WorkflowLoader {
       const fileContent = await readFile(workflowPath, 'utf-8');
       const workflow = JSON.parse(fileContent) as ComfyUIWorkflow;
 
-      // Validate basic structure
       this.validateWorkflow(workflow);
 
       this.workflowCache.set(name, workflow);
@@ -74,151 +101,156 @@ export class WorkflowLoader {
   }
 
   /**
-   * Inject parameters into workflow
-   *
-   * This method intelligently finds the appropriate nodes to inject parameters:
-   * - For prompts: Finds the KSampler node, then traces its "positive" and "negative"
-   *   connections to find the CLIPTextEncode nodes
-   * - For dimensions: Finds EmptyLatentImage or EmptySD3LatentImage nodes (generation)
-   *   or ImageScale nodes (resize)
-   * - For seeds: Randomizes all seed values if randomizeSeeds is enabled
-   * - For input images: Injects filename into LoadImage nodes
-   * - For denoise strength: Injects into KSampler.denoise (for img2img workflows)
-   * - For upscale method: Injects model name into UpscaleModelLoader nodes
+   * Prepare workflow for execution by detecting mode, removing unused nodes,
+   * rewiring connections, and injecting parameters.
    */
-  injectParameters(workflow: ComfyUIWorkflow, params: WorkflowParameters): ComfyUIWorkflow {
-    // Create a deep copy to avoid mutating the cached workflow
-    let modifiedWorkflow: ComfyUIWorkflow;
-    try {
-      modifiedWorkflow = JSON.parse(JSON.stringify(workflow)) as ComfyUIWorkflow;
-    } catch (error) {
-      throw new Error(`Failed to clone workflow: ${(error as Error).message}`);
-    }
+  prepareWorkflow(workflow: ComfyUIWorkflow, options: GenerateOptions): PreparedWorkflow {
+    // Deep clone to avoid mutating the cached workflow
+    const w = JSON.parse(JSON.stringify(workflow)) as ComfyUIWorkflow;
 
-    // Randomize all seeds if enabled
-    if (this.randomizeSeeds) {
-      this.randomizeAllSeeds(modifiedWorkflow);
-    }
+    // Detect mode
+    const hasPrompt = !!options.prompt;
+    const hasImage = !!options.input_image;
+    let mode: Mode;
+    if (hasPrompt && !hasImage) mode = 'txt2img';
+    else if (hasPrompt && hasImage) mode = 'img2img';
+    else mode = 'post-process';
 
-    // Find KSampler node to intelligently locate positive/negative prompt nodes
-    const samplerNodeId = this.findNodeByType(modifiedWorkflow, 'KSampler');
+    // Find all relevant nodes
+    const ksamplerId = this.findNodeByType(w, 'KSampler');
+    const emptyLatentId = this.findNodeByType(w, 'EmptySD3LatentImage')
+      || this.findNodeByType(w, 'EmptyLatentImage');
+    const loadImageId = this.findNodeByType(w, 'LoadImage');
+    const vaeEncodeId = this.findNodeByType(w, 'VAEEncode');
+    const vaeDecodeId = this.findNodeByType(w, 'VAEDecode');
+    const rmbgId = this.findNodeByType(w, 'RMBG');
+    const imageScaleId = this.findNodeByType(w, 'ImageScale');
+    const saveImageId = this.findNodeByType(w, 'SaveImage');
+    const unetLoaderId = this.findNodeByType(w, 'UNETLoader');
+    const clipLoaderId = this.findNodeByType(w, 'CLIPLoader');
+    const vaeLoaderId = this.findNodeByType(w, 'VAELoader');
+    const modelSamplingId = this.findNodeByType(w, 'ModelSamplingAuraFlow');
 
-    if (samplerNodeId) {
-      const samplerNode = modifiedWorkflow[samplerNodeId];
+    // Step 1: Configure input mode
+    if (mode === 'txt2img') {
+      // Remove img2img-only nodes
+      this.removeNode(w, loadImageId);
+      this.removeNode(w, vaeEncodeId);
 
-      // Inject positive prompt by following the "positive" connection
-      if (params.prompt !== undefined && samplerNode.inputs.positive) {
-        const positiveConnection = samplerNode.inputs.positive;
-        if (Array.isArray(positiveConnection) && positiveConnection.length > 0) {
-          const positiveNodeId = String(positiveConnection[0]);
-          const positiveNode = modifiedWorkflow[positiveNodeId];
-          if (!positiveNode) {
-            throw new Error(`KSampler node ${samplerNodeId} references non-existent positive node ${positiveNodeId}`);
-          }
-          if (positiveNode.class_type === 'CLIPTextEncode') {
-            modifiedWorkflow[positiveNodeId].inputs.text = params.prompt;
-          } else {
-            console.warn(`Positive connection from KSampler points to ${positiveNode.class_type} instead of CLIPTextEncode`);
-          }
+      // Set generation dimensions on the latent node
+      if (emptyLatentId) {
+        if (options.width && options.height) {
+          const { genWidth, genHeight } = calculateGenerationDimensions(options.width, options.height);
+          w[emptyLatentId].inputs.width = genWidth;
+          w[emptyLatentId].inputs.height = genHeight;
         }
+        // else: keep default 1024x1024
       }
 
-      // Inject negative prompt by following the "negative" connection
-      if (params.negative_prompt !== undefined && samplerNode.inputs.negative) {
-        const negativeConnection = samplerNode.inputs.negative;
-        if (Array.isArray(negativeConnection) && negativeConnection.length > 0) {
-          const negativeNodeId = String(negativeConnection[0]);
-          const negativeNode = modifiedWorkflow[negativeNodeId];
-          if (!negativeNode) {
-            throw new Error(`KSampler node ${samplerNodeId} references non-existent negative node ${negativeNodeId}`);
-          }
-          if (negativeNode.class_type === 'CLIPTextEncode') {
-            modifiedWorkflow[negativeNodeId].inputs.text = params.negative_prompt;
-          } else {
-            console.warn(`Negative connection from KSampler points to ${negativeNode.class_type} instead of CLIPTextEncode`);
-          }
-        }
+      // Inject prompts via KSampler connection tracing
+      this.injectPrompts(w, ksamplerId, options.prompt!, options.negative_prompt);
+
+    } else if (mode === 'img2img') {
+      // Remove txt2img latent node
+      this.removeNode(w, emptyLatentId);
+
+      // Rewire KSampler.latent_image → VAEEncode
+      if (ksamplerId && vaeEncodeId) {
+        w[ksamplerId].inputs.latent_image = [vaeEncodeId, 0];
+      }
+
+      // Set LoadImage filename
+      if (loadImageId) {
+        w[loadImageId].inputs.image = options.input_image!;
+      }
+
+      // Set denoise strength (default 0.75 for img2img)
+      if (ksamplerId) {
+        w[ksamplerId].inputs.denoise = options.denoise_strength ?? 0.75;
+      }
+
+      // Inject prompts
+      this.injectPrompts(w, ksamplerId, options.prompt!, options.negative_prompt);
+
+    } else {
+      // post-process: Remove entire generation pipeline
+      // Get CLIP node IDs from KSampler connections before removing it
+      let clipPosId: string | null = null;
+      let clipNegId: string | null = null;
+      if (ksamplerId && w[ksamplerId]) {
+        const posConn = w[ksamplerId].inputs.positive;
+        if (Array.isArray(posConn)) clipPosId = String(posConn[0]);
+        const negConn = w[ksamplerId].inputs.negative;
+        if (Array.isArray(negConn)) clipNegId = String(negConn[0]);
+      }
+
+      const genNodeIds = [
+        ksamplerId, emptyLatentId, vaeEncodeId, vaeDecodeId,
+        clipPosId, clipNegId, unetLoaderId, clipLoaderId,
+        vaeLoaderId, modelSamplingId,
+      ];
+      for (const id of genNodeIds) {
+        this.removeNode(w, id);
+      }
+
+      // Set LoadImage filename
+      if (loadImageId) {
+        w[loadImageId].inputs.image = options.input_image!;
+      }
+    }
+
+    // Step 2: Build post-processing chain
+    let lastNodeId: string;
+    const lastNodeOutput = 0;
+
+    if (mode === 'post-process') {
+      if (!loadImageId || !w[loadImageId]) {
+        throw new Error('LoadImage node required for post-process mode');
+      }
+      lastNodeId = loadImageId;
+    } else {
+      if (!vaeDecodeId || !w[vaeDecodeId]) {
+        throw new Error('VAEDecode node required for generation modes');
+      }
+      lastNodeId = vaeDecodeId;
+    }
+
+    // RMBG (background removal)
+    if (options.remove_background) {
+      if (rmbgId && w[rmbgId]) {
+        w[rmbgId].inputs.image = [lastNodeId, lastNodeOutput];
+        lastNodeId = rmbgId;
       }
     } else {
-      // Fallback: if no KSampler found, use the old method (find first CLIPTextEncode)
-      if (params.prompt !== undefined) {
-        const promptNodeId = this.findNodeByType(modifiedWorkflow, 'CLIPTextEncode');
-        if (promptNodeId) {
-          modifiedWorkflow[promptNodeId].inputs.text = params.prompt;
-        } else {
-          console.warn('No KSampler or CLIPTextEncode node found in workflow - prompt will not be injected');
-        }
-      }
+      this.removeNode(w, rmbgId);
     }
 
-    // Inject width and height into latent image nodes
-    // Support both EmptyLatentImage (SD1.5/SDXL) and EmptySD3LatentImage (SD3)
-    if (params.width !== undefined || params.height !== undefined) {
-      const latentNodeId =
-        this.findNodeByType(modifiedWorkflow, 'EmptyLatentImage') ||
-        this.findNodeByType(modifiedWorkflow, 'EmptySD3LatentImage');
-
-      if (latentNodeId) {
-        const latentNode = modifiedWorkflow[latentNodeId];
-        if (params.width !== undefined) {
-          if (typeof latentNode.inputs.width !== 'number') {
-            console.warn(`Node ${latentNodeId} width is not a number: ${typeof latentNode.inputs.width}`);
-          }
-          modifiedWorkflow[latentNodeId].inputs.width = params.width;
-        }
-        if (params.height !== undefined) {
-          if (typeof latentNode.inputs.height !== 'number') {
-            console.warn(`Node ${latentNodeId} height is not a number: ${typeof latentNode.inputs.height}`);
-          }
-          modifiedWorkflow[latentNodeId].inputs.height = params.height;
-        }
-      } else {
-        console.warn('No EmptyLatentImage or EmptySD3LatentImage node found in workflow - dimensions will not be injected');
+    // ImageScale (resize)
+    if (options.width !== undefined && options.height !== undefined) {
+      if (imageScaleId && w[imageScaleId]) {
+        w[imageScaleId].inputs.image = [lastNodeId, lastNodeOutput];
+        w[imageScaleId].inputs.width = options.width;
+        w[imageScaleId].inputs.height = options.height;
+        lastNodeId = imageScaleId;
       }
+    } else {
+      this.removeNode(w, imageScaleId);
     }
 
-    // Inject input image filename into LoadImage nodes
-    if (params.input_image !== undefined) {
-      const loadImageNodeId = this.findNodeByType(modifiedWorkflow, 'LoadImage');
-      if (loadImageNodeId) {
-        modifiedWorkflow[loadImageNodeId].inputs.image = params.input_image;
-      } else {
-        console.warn('No LoadImage node found in workflow - input image will not be injected');
-      }
+    // Wire SaveImage to end of chain
+    if (saveImageId && w[saveImageId]) {
+      w[saveImageId].inputs.images = [lastNodeId, lastNodeOutput];
     }
 
-    // Inject denoise strength into KSampler
-    if (params.denoise_strength !== undefined && samplerNodeId) {
-      if (typeof params.denoise_strength !== 'number' || params.denoise_strength < 0 || params.denoise_strength > 1) {
-        console.warn(`Invalid denoise_strength: ${params.denoise_strength}. Must be between 0.0 and 1.0`);
-      } else {
-        modifiedWorkflow[samplerNodeId].inputs.denoise = params.denoise_strength;
-      }
+    // Randomize seeds
+    if (this.randomizeSeeds) {
+      this.randomizeAllSeeds(w);
     }
 
-    // Inject dimensions into ImageScale nodes (for resize workflows)
-    // Note: This is separate from EmptyLatentImage injection above
-    if (params.width !== undefined && params.height !== undefined) {
-      const scaleNodeId = this.findNodeByType(modifiedWorkflow, 'ImageScale');
+    // Validate no dangling references
+    this.validateNoDanglingRefs(w);
 
-      if (scaleNodeId) {
-        const scaleNode = modifiedWorkflow[scaleNodeId];
-        if ('width' in scaleNode.inputs && 'height' in scaleNode.inputs) {
-          modifiedWorkflow[scaleNodeId].inputs.width = params.width;
-          modifiedWorkflow[scaleNodeId].inputs.height = params.height;
-        }
-      }
-    }
-
-    // Inject upscale method (for upscale model selection)
-    if (params.upscale_method !== undefined) {
-      const upscaleNodeId = this.findNodeByType(modifiedWorkflow, 'UpscaleModelLoader');
-      if (upscaleNodeId) {
-        modifiedWorkflow[upscaleNodeId].inputs.model_name = params.upscale_method;
-      }
-    }
-
-    return modifiedWorkflow;
+    return { workflow: w, mode };
   }
 
   /**
@@ -234,6 +266,68 @@ export class WorkflowLoader {
   }
 
   /**
+   * Remove a node from the workflow
+   */
+  private removeNode(workflow: ComfyUIWorkflow, nodeId: string | null): void {
+    if (nodeId && workflow[nodeId]) {
+      delete workflow[nodeId];
+    }
+  }
+
+  /**
+   * Inject prompts by tracing KSampler connections to CLIPTextEncode nodes
+   */
+  private injectPrompts(
+    workflow: ComfyUIWorkflow,
+    ksamplerId: string | null,
+    prompt: string,
+    negativePrompt?: string
+  ): void {
+    if (!ksamplerId || !workflow[ksamplerId]) return;
+
+    const sampler = workflow[ksamplerId];
+
+    // Positive prompt
+    const posConn = sampler.inputs.positive;
+    if (Array.isArray(posConn)) {
+      const posNodeId = String(posConn[0]);
+      if (workflow[posNodeId]?.class_type === 'CLIPTextEncode') {
+        workflow[posNodeId].inputs.text = prompt;
+      }
+    }
+
+    // Negative prompt
+    if (negativePrompt) {
+      const negConn = sampler.inputs.negative;
+      if (Array.isArray(negConn)) {
+        const negNodeId = String(negConn[0]);
+        if (workflow[negNodeId]?.class_type === 'CLIPTextEncode') {
+          workflow[negNodeId].inputs.text = negativePrompt;
+        }
+      }
+    }
+  }
+
+  /**
+   * Validate that no remaining node references a removed node
+   */
+  private validateNoDanglingRefs(workflow: ComfyUIWorkflow): void {
+    const nodeIds = new Set(Object.keys(workflow));
+    for (const [nodeId, node] of Object.entries(workflow)) {
+      for (const [inputName, inputValue] of Object.entries(node.inputs)) {
+        if (Array.isArray(inputValue) && inputValue.length >= 2) {
+          const refId = String(inputValue[0]);
+          if (!nodeIds.has(refId)) {
+            throw new Error(
+              `Dangling reference: node ${nodeId} (${node.class_type}) input "${inputName}" references removed node ${refId}`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Validate workflow structure
    */
   private validateWorkflow(workflow: ComfyUIWorkflow): void {
@@ -246,7 +340,6 @@ export class WorkflowLoader {
       throw new Error('Workflow must contain at least one node');
     }
 
-    // Validate each node has required fields
     for (const [nodeId, node] of Object.entries(workflow)) {
       if (!node.class_type) {
         throw new Error(`Node ${nodeId} missing class_type`);
@@ -284,12 +377,10 @@ export class WorkflowLoader {
 
   /**
    * Randomize all seed values in the workflow
-   * Finds all nodes with a 'seed' input and generates a random value
    */
   private randomizeAllSeeds(workflow: ComfyUIWorkflow): void {
     for (const [nodeId, node] of Object.entries(workflow)) {
       if (node.inputs && 'seed' in node.inputs) {
-        // Generate a random seed value (ComfyUI typically uses large integers)
         const randomSeed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
         workflow[nodeId].inputs.seed = randomSeed;
       }

@@ -1,13 +1,15 @@
 import { randomBytes } from 'crypto';
 import type { ComfyUIClient } from '../comfyui/client.js';
 import type { WorkflowLoader } from '../workflows/workflow-loader.js';
-import { GenerateImageInputSchema, sanitizePrompt } from '../utils/validation.js';
+import type { Mode } from '../workflows/workflow-loader.js';
+import { GenerateImageInputSchema, sanitizePrompt, isAbsolutePath } from '../utils/validation.js';
 import { type RequestHistoryEntry, recordHistoryEntry } from '../utils/history.js';
 
 export interface GenerateImageOutput {
   prompt_id: string;
   number: number;
   status: string;
+  mode: Mode;
 }
 
 export async function generateImage(
@@ -19,24 +21,43 @@ export async function generateImage(
   // Validate input
   const validatedInput = GenerateImageInputSchema.parse(input);
 
+  // Must have at least prompt or image_path
+  if (!validatedInput.prompt && !validatedInput.image_path) {
+    throw new Error('Must provide at least prompt or image_path');
+  }
+
   // Sanitize prompts
-  const sanitizedPrompt = sanitizePrompt(validatedInput.prompt);
+  const sanitizedPrompt = validatedInput.prompt
+    ? sanitizePrompt(validatedInput.prompt)
+    : undefined;
   const sanitizedNegativePrompt = validatedInput.negative_prompt
     ? sanitizePrompt(validatedInput.negative_prompt)
     : undefined;
 
-  // Determine workflow name
-  const workflowName = validatedInput.workflow_name;
+  // Upload image if provided
+  let uploadedFilename: string | undefined;
+  if (validatedInput.image_path) {
+    if (!isAbsolutePath(validatedInput.image_path)) {
+      throw new Error(`Image path must be absolute. Received: ${validatedInput.image_path}`);
+    }
+    console.error(`Uploading image from: ${validatedInput.image_path}`);
+    const uploadResult = await client.uploadImage(validatedInput.image_path);
+    console.error(`Image uploaded successfully: ${uploadResult.name}`);
+    uploadedFilename = uploadResult.name;
+  }
 
-  // Load workflow (uses cache if available)
-  const baseWorkflow = await workflowLoader.loadWorkflow(workflowName);
+  // Load workflow
+  const baseWorkflow = await workflowLoader.loadWorkflow();
 
-  // Inject parameters
-  const modifiedWorkflow = workflowLoader.injectParameters(baseWorkflow, {
+  // Prepare workflow (mode detection, node removal/rewiring, parameter injection)
+  const { workflow: modifiedWorkflow, mode } = workflowLoader.prepareWorkflow(baseWorkflow, {
     prompt: sanitizedPrompt,
     negative_prompt: sanitizedNegativePrompt,
+    input_image: uploadedFilename,
+    denoise_strength: validatedInput.denoise_strength,
     width: validatedInput.width,
     height: validatedInput.height,
+    remove_background: validatedInput.remove_background,
   });
 
   // Generate unique client ID
@@ -45,20 +66,25 @@ export async function generateImage(
   // Queue the prompt
   const response = await client.queuePrompt(modifiedWorkflow, clientId);
 
-  // Add to request history
+  // Record history
   recordHistoryEntry(requestHistory, {
     prompt_id: response.prompt_id,
     prompt: sanitizedPrompt,
     negative_prompt: sanitizedNegativePrompt,
     width: validatedInput.width,
     height: validatedInput.height,
-    workflow_name: workflowName || workflowLoader.getDefaultWorkflow(),
+    mode,
+    remove_background: validatedInput.remove_background,
+    denoise_strength: validatedInput.denoise_strength,
+    workflow_name: workflowLoader.getDefaultWorkflow(),
     queue_position: response.number,
+    image_path: validatedInput.image_path,
   });
 
   return {
     prompt_id: response.prompt_id,
     number: response.number,
     status: 'queued',
+    mode,
   };
 }

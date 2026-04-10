@@ -1,9 +1,12 @@
 export interface RequestHistoryEntry {
   prompt_id: string;
-  prompt: string;
+  prompt?: string;
   negative_prompt?: string;
-  width: number;
-  height: number;
+  width?: number;
+  height?: number;
+  mode: 'txt2img' | 'img2img' | 'post-process';
+  remove_background?: boolean;
+  denoise_strength?: number;
   workflow_name: string;
   timestamp: string;
   status: 'queued' | 'executing' | 'completed' | 'failed' | 'unknown';

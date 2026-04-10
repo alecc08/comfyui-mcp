@@ -71,6 +71,32 @@
       "title": "VAE Decode"
     }
   },
+  "10": {
+    "inputs": {
+      "image": "example.png",
+      "upload": "image"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "11": {
+    "inputs": {
+      "pixels": [
+        "10",
+        0
+      ],
+      "vae": [
+        "39",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
   "37": {
     "inputs": {
       "unet_name": "qwen_image_2512_fp8_e4m3fn.safetensors",
@@ -103,8 +129,8 @@
   },
   "58": {
     "inputs": {
-      "width": 512,
-      "height": 512,
+      "width": 1024,
+      "height": 1024,
       "batch_size": 1
     },
     "class_type": "EmptySD3LatentImage",
@@ -116,7 +142,7 @@
     "inputs": {
       "filename_prefix": "mcp/MCP",
       "images": [
-        "8",
+        "71",
         0
       ]
     },
@@ -136,6 +162,43 @@
     "class_type": "ModelSamplingAuraFlow",
     "_meta": {
       "title": "ModelSamplingAuraFlow"
+    }
+  },
+  "70": {
+    "inputs": {
+      "model": "RMBG-2.0",
+      "sensitivity": 1,
+      "process_res": 1024,
+      "mask_blur": 0,
+      "mask_offset": 0,
+      "invert_output": false,
+      "refine_foreground": false,
+      "background": "Alpha",
+      "background_color": "#222222",
+      "image": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "RMBG",
+    "_meta": {
+      "title": "Remove Background (RMBG)"
+    }
+  },
+  "71": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "width": 512,
+      "height": 512,
+      "crop": "disabled",
+      "image": [
+        "70",
+        0
+      ]
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Upscale Image"
     }
   }
 }
