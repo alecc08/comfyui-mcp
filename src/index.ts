@@ -9,17 +9,10 @@ import { ImageServer } from './http/image-server.js';
 import { generateImage } from './tools/generate-image.js';
 import { getImage } from './tools/get-image.js';
 import { getRequestHistory } from './tools/get-request-history.js';
-import { listWorkflows } from './tools/list-workflows.js';
-import { modifyImage } from './tools/modify-image.js';
-import { resizeImage } from './tools/resize-image.js';
-import { removeBackground } from './tools/remove-background.js';
 import { type RequestHistoryEntry } from './utils/history.js';
 import {
   GenerateImageInputSchema,
   GetImageInputSchema,
-  ModifyImageInputSchema,
-  ResizeImageInputSchema,
-  RemoveBackgroundInputSchema,
   GetRequestHistoryInputSchema,
 } from './utils/validation.js';
 
@@ -57,7 +50,20 @@ const server = new McpServer({
 // Register tools
 server.tool(
   'comfyui_generate_image',
-  'Generate an image from a text prompt using ComfyUI.',
+  `Generate, modify, or post-process images using ComfyUI. Three modes (auto-detected):
+- txt2img: Provide prompt → generates image from text
+- img2img: Provide prompt + image_path → modifies existing image guided by prompt
+- post-process: Provide image_path without prompt → resize and/or remove background only
+
+Parameters:
+- prompt (string, optional): Text description of desired image
+- negative_prompt (string, optional): What to avoid in the image
+- image_path (string, optional): Absolute path to input image (triggers img2img or post-process)
+- denoise_strength (number 0-1, optional): How much to change input image (img2img only, default 0.75)
+- width/height (int, optional): Target output dimensions (triggers resize post-processing)
+- remove_background (boolean, optional): Remove background from output image
+
+Must provide at least prompt or image_path.`,
   GenerateImageInputSchema.shape,
   { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   async (args) => {
@@ -67,57 +73,6 @@ server.tool(
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Error in comfyui_generate_image:', msg);
-      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
-    }
-  }
-);
-
-server.tool(
-  'comfyui_modify_image',
-  'Modify an existing image via img2img. Use denoise_strength (0.0–1.0) to control how much changes.',
-  ModifyImageInputSchema.shape,
-  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  async (args) => {
-    try {
-      const result = await modifyImage(args, comfyClient, workflowLoader, requestHistory);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error('Error in comfyui_modify_image:', msg);
-      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
-    }
-  }
-);
-
-server.tool(
-  'comfyui_resize_image',
-  'Resize an image; auto-selects AI upscaling or simple downscale based on target vs source dimensions.',
-  ResizeImageInputSchema.shape,
-  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  async (args) => {
-    try {
-      const result = await resizeImage(args, comfyClient, workflowLoader, requestHistory);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error('Error in comfyui_resize_image:', msg);
-      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
-    }
-  }
-);
-
-server.tool(
-  'comfyui_remove_background',
-  'Remove the background from an image, leaving the subject with transparency.',
-  RemoveBackgroundInputSchema.shape,
-  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  async (args) => {
-    try {
-      const result = await removeBackground(args, comfyClient, workflowLoader, requestHistory);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error('Error in comfyui_remove_background:', msg);
       return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
     }
   }
@@ -152,23 +107,6 @@ server.tool(
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Error in comfyui_get_request_history:', msg);
-      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
-    }
-  }
-);
-
-server.tool(
-  'comfyui_list_workflows',
-  'List available workflow files in the workspace directory.',
-  {},
-  { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-  async () => {
-    try {
-      const result = await listWorkflows(workflowLoader);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      console.error('Error in comfyui_list_workflows:', msg);
       return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
     }
   }

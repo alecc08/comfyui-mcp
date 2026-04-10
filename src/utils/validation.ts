@@ -1,14 +1,16 @@
 import { z } from 'zod';
 
 /**
- * Schema for generate_image input
+ * Schema for unified generate_image input
  */
 export const GenerateImageInputSchema = z.object({
-  prompt: z.string().min(1, 'Prompt cannot be empty').max(10000, 'Prompt too long'),
+  prompt: z.string().min(1, 'Prompt cannot be empty').max(10000, 'Prompt too long').optional(),
   negative_prompt: z.string().max(10000, 'Negative prompt too long').optional(),
-  width: z.number().int().positive().optional().default(512),
-  height: z.number().int().positive().optional().default(512),
-  workflow_name: z.string().optional(),
+  image_path: z.string().min(1, 'Image path cannot be empty').optional(),
+  denoise_strength: z.number().min(0.0).max(1.0).optional(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  remove_background: z.boolean().optional(),
 });
 
 export type GenerateImageInput = z.infer<typeof GenerateImageInputSchema>;
@@ -21,43 +23,6 @@ export const GetImageInputSchema = z.object({
 });
 
 export type GetImageInput = z.infer<typeof GetImageInputSchema>;
-
-/**
- * Schema for modify_image input (img2img)
- */
-export const ModifyImageInputSchema = z.object({
-  image_path: z.string().min(1, 'Image path cannot be empty'),
-  prompt: z.string().min(1, 'Prompt cannot be empty').max(10000, 'Prompt too long'),
-  negative_prompt: z.string().max(10000, 'Negative prompt too long').optional(),
-  denoise_strength: z.number().min(0.0).max(1.0).optional().default(0.75),
-  width: z.number().int().positive().optional(),
-  height: z.number().int().positive().optional(),
-  workflow_name: z.string().optional().default('img2img_workflow.json'),
-});
-
-export type ModifyImageInput = z.infer<typeof ModifyImageInputSchema>;
-
-/**
- * Schema for resize_image input
- */
-export const ResizeImageInputSchema = z.object({
-  image_path: z.string().min(1, 'Image path cannot be empty'),
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
-  workflow_name: z.string().optional(),
-});
-
-export type ResizeImageInput = z.infer<typeof ResizeImageInputSchema>;
-
-/**
- * Schema for remove_background input
- */
-export const RemoveBackgroundInputSchema = z.object({
-  image_path: z.string().min(1, 'Image path cannot be empty'),
-  workflow_name: z.string().optional().default('remove_background_workflow.json'),
-});
-
-export type RemoveBackgroundInput = z.infer<typeof RemoveBackgroundInputSchema>;
 
 /**
  * Schema for get_request_history input

@@ -34,7 +34,7 @@ export function loadConfig(): Config {
     },
     workflow: {
       workspaceDir: process.env.COMFYUI_WORKFLOW_DIR || defaultWorkflowDir,
-      defaultWorkflow: 'default_workflow.json',
+      defaultWorkflow: 'workflow.json',
       randomizeSeeds: process.env.COMFYUI_RANDOMIZE_SEEDS !== 'false',
     },
     mcp: {
