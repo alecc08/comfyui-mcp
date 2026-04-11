@@ -7,7 +7,6 @@ export const GenerateImageInputSchema = z.object({
   prompt: z.string().min(1, 'Prompt cannot be empty').max(10000, 'Prompt too long').optional(),
   negative_prompt: z.string().max(10000, 'Negative prompt too long').optional(),
   image_path: z.string().min(1, 'Image path cannot be empty').optional(),
-  denoise_strength: z.number().min(0.0).max(1.0).optional(),
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
   remove_background: z.boolean().optional(),

@@ -108,63 +108,66 @@ ComfyUI is the image generation backend that powers this MCP server.
 
 ## Step 2: Download AI Models
 
-ComfyUI needs AI models to generate images. Here's what you need:
+The bundled `workflow_files/workflow.json` is built for **FLUX.2 [klein] 4B**
+(base variant) — a 4B-parameter Black Forest Labs model that fits in ~13 GB of
+VRAM. You'll need three model files before the workflow will run.
 
-### Stable Diffusion Models
+| File | Target folder | Size |
+|---|---|---|
+| `flux-2-klein-base-4b.safetensors` | `ComfyUI/models/diffusion_models/` | ~7.75 GB |
+| `qwen_3_4b.safetensors`            | `ComfyUI/models/text_encoders/`    | ~8.04 GB |
+| `flux2-vae.safetensors`            | `ComfyUI/models/vae/`              | ~254 MB |
 
-You need at least one Stable Diffusion checkpoint model:
+All three come from [Comfy-Org/flux2-klein-4B](https://huggingface.co/Comfy-Org/flux2-klein-4B/tree/main/split_files) on Hugging Face.
 
-#### Option A: SDXL (Recommended - Best Quality)
+### Automated setup (recommended)
 
-**SDXL Base 1.0** (6.46 GB)
-- Download: [Hugging Face](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors)
-- Location: Place in `ComfyUI/models/checkpoints/`
-
-#### Option B: SD 1.5 (Smaller, Faster)
-
-**Stable Diffusion v1.5** (4.27 GB)
-- Download: [Hugging Face](https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors)
-- Location: Place in `ComfyUI/models/checkpoints/`
-
-#### Option C: Realistic Vision (Great for Photos)
-
-**Realistic Vision V5.1** (2.13 GB)
-- Download: [Civitai](https://civitai.com/api/download/models/130072) (requires Civitai account)
-- Location: Place in `ComfyUI/models/checkpoints/`
-
-### VAE Models (Optional but Recommended)
-
-VAE improves image quality and color accuracy:
-
-**SDXL VAE** (335 MB)
-- Download: [Hugging Face](https://huggingface.co/stabilityai/sdxl-vae/resolve/main/sdxl_vae.safetensors)
-- Location: Place in `ComfyUI/models/vae/`
-
-**SD 1.5 VAE** (335 MB)
-- Download: [Hugging Face](https://huggingface.co/stabilityai/sd-vae-ft-mse-original/resolve/main/vae-ft-mse-840000-ema-pruned.safetensors)
-- Location: Place in `ComfyUI/models/vae/`
-
-### Quick Download Commands
+This repo ships a helper script that installs the RMBG custom node (see Step 3)
+and downloads all three model files in one go. From the MCP server repo root:
 
 ```bash
-# Navigate to your ComfyUI directory
-cd ComfyUI/models/checkpoints
+# Positional argument:
+npm run setup:comfyui -- /path/to/ComfyUI
 
-# Download SDXL (Linux/macOS with wget)
-wget https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors
-
-# Download SD 1.5 (Linux/macOS with wget)
-wget https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors
-
-# For Windows, use a browser or PowerShell:
-# Invoke-WebRequest -Uri "https://huggingface.co/..." -OutFile "model.safetensors"
+# Or via environment variable:
+COMFYUI_PATH=/path/to/ComfyUI npm run setup:comfyui
 ```
+
+The script is idempotent: files that already exist are skipped, so re-running
+is safe. It probes `$HOME/ComfyUI`, `$HOME/comfyui`, and `/opt/ComfyUI` if no
+path is supplied.
+
+After it finishes, **restart ComfyUI** so the new custom node is loaded.
+
+### Manual download
+
+If you prefer to download the files yourself, place them in the target folders
+listed above. Example with `curl`:
+
+```bash
+cd /path/to/ComfyUI
+mkdir -p models/diffusion_models models/text_encoders models/vae
+
+curl -L --fail --output models/diffusion_models/flux-2-klein-base-4b.safetensors \
+  https://huggingface.co/Comfy-Org/flux2-klein-4B/resolve/main/split_files/diffusion_models/flux-2-klein-base-4b.safetensors
+
+curl -L --fail --output models/text_encoders/qwen_3_4b.safetensors \
+  https://huggingface.co/Comfy-Org/flux2-klein-4B/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors
+
+curl -L --fail --output models/vae/flux2-vae.safetensors \
+  https://huggingface.co/Comfy-Org/flux2-klein-4B/resolve/main/split_files/vae/flux2-vae.safetensors
+```
+
+On Windows, use a browser or `Invoke-WebRequest`.
 
 ---
 
 ## Step 3: Install ComfyUI Custom Nodes
 
-For advanced features like background removal, install ComfyUI-Manager and custom nodes:
+The bundled workflow uses the **RMBG** node from `ComfyUI-RMBG` for background
+removal. If you ran `npm run setup:comfyui` in Step 2, this is already
+installed — skip ahead to Step 4. Otherwise, install `ComfyUI-Manager` and/or
+`ComfyUI-RMBG` manually below.
 
 ### 3.1 Install ComfyUI-Manager
 
@@ -186,6 +189,9 @@ For advanced features like background removal, install ComfyUI-Manager and custo
    - You should see the ComfyUI-Manager interface
 
 ### 3.2 Install ComfyUI-RMBG (Background Removal)
+
+> **Skip this section if you used `npm run setup:comfyui`** — the script
+> already cloned `ComfyUI-RMBG` into `custom_nodes/`.
 
 **Via ComfyUI-Manager (Recommended):**
 
@@ -294,7 +300,8 @@ npm start
            "COMFYUI_URL": "http://127.0.0.1:8188",
            "COMFYUI_WORKFLOW_DIR": "C:\\Users\\YOUR-USERNAME\\Documents\\projects\\comfyui-mcp\\workflow_files",
            "COMFYUI_MCP_HTTP_PORT": "8190",
-           "COMFYUI_RANDOMIZE_SEEDS": "true"
+           "COMFYUI_RANDOMIZE_SEEDS": "true",
+           "COMFYUI_POLL_INTERVAL_MS": "2000"
          }
        }
      }
@@ -328,12 +335,15 @@ npm start
 | `COMFYUI_MCP_HTTP_PORT` | `8190` | Port for the HTTP image proxy server |
 | `COMFYUI_IMAGE_CACHE_DIR` | `~/.cache/comfyui-mcp` | Directory for caching downloaded images |
 | `COMFYUI_RANDOMIZE_SEEDS` | `true` | Enable/disable seed randomization |
+| `COMFYUI_POLL_INTERVAL_MS` | `2000` | Interval (ms) the MCP server uses to poll ComfyUI before pushing a completion notification to the AI agent |
 
 ---
 
 ## Step 6: Test the Setup
 
 Now let's verify everything works!
+
+> **Heads up:** After you call `comfyui_generate_image`, the MCP server polls ComfyUI in the background and pushes a notification to the AI agent when the image is ready. The agent does **not** need to manually poll `comfyui_get_image` — it will be told automatically when the result is available.
 
 ### 6.1 Test ComfyUI Connection
 

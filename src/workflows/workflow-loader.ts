@@ -8,7 +8,6 @@ export interface GenerateOptions {
   prompt?: string;
   negative_prompt?: string;
   input_image?: string;       // uploaded filename
-  denoise_strength?: number;
   width?: number;
   height?: number;
   remove_background?: boolean;
@@ -45,16 +44,19 @@ export function calculateGenerationDimensions(
 export class WorkflowLoader {
   private workspaceDir: string;
   private defaultWorkflow: string;
+  private editWorkflow: string;
   private randomizeSeeds: boolean;
   private workflowCache: Map<string, ComfyUIWorkflow> = new Map();
 
   constructor(
     workspaceDir: string,
     defaultWorkflow: string = 'workflow.json',
+    editWorkflow: string = 'workflow_edit.json',
     randomizeSeeds: boolean = true
   ) {
     this.workspaceDir = workspaceDir;
     this.defaultWorkflow = defaultWorkflow;
+    this.editWorkflow = editWorkflow;
     this.randomizeSeeds = randomizeSeeds;
   }
 
@@ -101,88 +103,77 @@ export class WorkflowLoader {
   }
 
   /**
-   * Prepare workflow for execution by detecting mode, removing unused nodes,
-   * rewiring connections, and injecting parameters.
+   * Detect mode from generation options.
    */
-  prepareWorkflow(workflow: ComfyUIWorkflow, options: GenerateOptions): PreparedWorkflow {
-    // Deep clone to avoid mutating the cached workflow
-    const w = JSON.parse(JSON.stringify(workflow)) as ComfyUIWorkflow;
-
-    // Detect mode
+  detectMode(options: GenerateOptions): Mode {
     const hasPrompt = !!options.prompt;
     const hasImage = !!options.input_image;
-    let mode: Mode;
-    if (hasPrompt && !hasImage) mode = 'txt2img';
-    else if (hasPrompt && hasImage) mode = 'img2img';
-    else mode = 'post-process';
+    if (hasPrompt && !hasImage) return 'txt2img';
+    if (hasPrompt && hasImage) return 'img2img';
+    return 'post-process';
+  }
 
-    // Find all relevant nodes
+  /**
+   * Load the appropriate workflow file for a given mode.
+   */
+  async loadWorkflowForMode(mode: Mode): Promise<ComfyUIWorkflow> {
+    const name = mode === 'img2img' ? this.editWorkflow : this.defaultWorkflow;
+    return this.loadWorkflow(name);
+  }
+
+  /**
+   * Prepare workflow for execution by removing unused nodes, rewiring
+   * connections, and injecting parameters.
+   */
+  prepareWorkflow(workflow: ComfyUIWorkflow, options: GenerateOptions): PreparedWorkflow {
+    const w = JSON.parse(JSON.stringify(workflow)) as ComfyUIWorkflow;
+    const mode = this.detectMode(options);
+
+    if (mode === 'img2img') {
+      this.prepareEditWorkflow(w, options);
+    } else {
+      this.prepareDefaultWorkflow(w, options, mode);
+    }
+
+    if (this.randomizeSeeds) {
+      this.randomizeAllSeeds(w);
+    }
+
+    this.validateNoDanglingRefs(w);
+
+    return { workflow: w, mode };
+  }
+
+  /**
+   * Handle txt2img and post-process using the default workflow.
+   */
+  private prepareDefaultWorkflow(w: ComfyUIWorkflow, options: GenerateOptions, mode: Mode): void {
     const ksamplerId = this.findNodeByType(w, 'KSampler');
-    const emptyLatentId = this.findNodeByType(w, 'EmptySD3LatentImage')
+    const emptyLatentId = this.findNodeByType(w, 'EmptyFlux2LatentImage')
+      || this.findNodeByType(w, 'EmptySD3LatentImage')
       || this.findNodeByType(w, 'EmptyLatentImage');
     const loadImageId = this.findNodeByType(w, 'LoadImage');
     const vaeEncodeId = this.findNodeByType(w, 'VAEEncode');
     const vaeDecodeId = this.findNodeByType(w, 'VAEDecode');
-    const rmbgId = this.findNodeByType(w, 'RMBG');
-    const imageScaleId = this.findNodeByType(w, 'ImageScale');
-    const saveImageId = this.findNodeByType(w, 'SaveImage');
     const unetLoaderId = this.findNodeByType(w, 'UNETLoader');
     const clipLoaderId = this.findNodeByType(w, 'CLIPLoader');
     const vaeLoaderId = this.findNodeByType(w, 'VAELoader');
     const modelSamplingId = this.findNodeByType(w, 'ModelSamplingAuraFlow');
 
-    // Step 1: Configure input mode
     if (mode === 'txt2img') {
-      // Remove img2img-only nodes
       this.removeNode(w, loadImageId);
       this.removeNode(w, vaeEncodeId);
 
-      // Set generation dimensions on the latent node
-      if (emptyLatentId) {
-        if (options.width && options.height) {
-          const { genWidth, genHeight } = calculateGenerationDimensions(options.width, options.height);
-          w[emptyLatentId].inputs.width = genWidth;
-          w[emptyLatentId].inputs.height = genHeight;
-        }
-        // else: keep default 1024x1024
+      if (emptyLatentId && options.width && options.height) {
+        const { genWidth, genHeight } = calculateGenerationDimensions(options.width, options.height);
+        w[emptyLatentId].inputs.width = genWidth;
+        w[emptyLatentId].inputs.height = genHeight;
       }
 
-      // Inject prompts via KSampler connection tracing
-      this.injectPrompts(w, ksamplerId, options.prompt!, options.negative_prompt);
-
-    } else if (mode === 'img2img') {
-      // Remove txt2img latent node
-      this.removeNode(w, emptyLatentId);
-
-      // Rewire KSampler.latent_image → VAEEncode
-      if (ksamplerId && vaeEncodeId) {
-        w[ksamplerId].inputs.latent_image = [vaeEncodeId, 0];
-      }
-
-      // Set LoadImage filename
-      if (loadImageId) {
-        w[loadImageId].inputs.image = options.input_image!;
-      }
-
-      // Set denoise strength (default 0.75 for img2img)
-      if (ksamplerId) {
-        w[ksamplerId].inputs.denoise = options.denoise_strength ?? 0.75;
-      }
-
-      // Inject prompts
-      this.injectPrompts(w, ksamplerId, options.prompt!, options.negative_prompt);
-
+      this.injectPromptsAtCLIPTargets(w, this.findCLIPTargetsFromKSampler(w, ksamplerId), options);
     } else {
-      // post-process: Remove entire generation pipeline
-      // Get CLIP node IDs from KSampler connections before removing it
-      let clipPosId: string | null = null;
-      let clipNegId: string | null = null;
-      if (ksamplerId && w[ksamplerId]) {
-        const posConn = w[ksamplerId].inputs.positive;
-        if (Array.isArray(posConn)) clipPosId = String(posConn[0]);
-        const negConn = w[ksamplerId].inputs.negative;
-        if (Array.isArray(negConn)) clipNegId = String(negConn[0]);
-      }
+      // post-process: strip entire generation pipeline
+      const { clipPosId, clipNegId } = this.findCLIPTargetsFromKSampler(w, ksamplerId);
 
       const genNodeIds = [
         ksamplerId, emptyLatentId, vaeEncodeId, vaeDecodeId,
@@ -193,29 +184,64 @@ export class WorkflowLoader {
         this.removeNode(w, id);
       }
 
-      // Set LoadImage filename
       if (loadImageId) {
         w[loadImageId].inputs.image = options.input_image!;
       }
     }
 
-    // Step 2: Build post-processing chain
-    let lastNodeId: string;
-    const lastNodeOutput = 0;
+    const chainStartId = mode === 'post-process' ? loadImageId : vaeDecodeId;
+    const chainStartLabel = mode === 'post-process' ? 'LoadImage' : 'VAEDecode';
+    this.buildPostProcessingChain(w, chainStartId, chainStartLabel, options);
+  }
 
-    if (mode === 'post-process') {
-      if (!loadImageId || !w[loadImageId]) {
-        throw new Error('LoadImage node required for post-process mode');
-      }
-      lastNodeId = loadImageId;
-    } else {
-      if (!vaeDecodeId || !w[vaeDecodeId]) {
-        throw new Error('VAEDecode node required for generation modes');
-      }
-      lastNodeId = vaeDecodeId;
+  /**
+   * Handle img2img using the Flux 2 Klein edit workflow (ReferenceLatent +
+   * CFGGuider + SamplerCustomAdvanced pattern). The reference image is
+   * pre-scaled by ImageScaleToTotalPixels + GetImageSize, so per-mode
+   * dimension math is not needed — the sampler generates at whatever size
+   * the reference lands at after scaling.
+   */
+  private prepareEditWorkflow(w: ComfyUIWorkflow, options: GenerateOptions): void {
+    const loadImageId = this.findNodeByType(w, 'LoadImage');
+    const vaeDecodeId = this.findNodeByType(w, 'VAEDecode');
+    const cfgGuiderId = this.findNodeByType(w, 'CFGGuider');
+
+    if (!loadImageId) {
+      throw new Error('Edit workflow missing LoadImage node');
+    }
+    if (!cfgGuiderId) {
+      throw new Error('Edit workflow missing CFGGuider node');
     }
 
-    // RMBG (background removal)
+    w[loadImageId].inputs.image = options.input_image!;
+
+    this.injectPromptsAtCLIPTargets(w, this.findCLIPTargetsFromCFGGuider(w, cfgGuiderId), options);
+
+    this.buildPostProcessingChain(w, vaeDecodeId, 'VAEDecode', options);
+  }
+
+  /**
+   * Build the shared RMBG → ImageScale → SaveImage chain starting from a
+   * given upstream node. Mode-agnostic — used by both the default and edit
+   * workflows.
+   */
+  private buildPostProcessingChain(
+    w: ComfyUIWorkflow,
+    startNodeId: string | null,
+    startNodeLabel: string,
+    options: GenerateOptions,
+  ): void {
+    const rmbgId = this.findNodeByType(w, 'RMBG');
+    const imageScaleId = this.findNodeByType(w, 'ImageScale');
+    const saveImageId = this.findNodeByType(w, 'SaveImage');
+
+    if (!startNodeId || !w[startNodeId]) {
+      throw new Error(`${startNodeLabel} node required as post-processing chain start`);
+    }
+
+    let lastNodeId: string = startNodeId;
+    const lastNodeOutput = 0;
+
     if (options.remove_background) {
       if (rmbgId && w[rmbgId]) {
         w[rmbgId].inputs.image = [lastNodeId, lastNodeOutput];
@@ -225,7 +251,6 @@ export class WorkflowLoader {
       this.removeNode(w, rmbgId);
     }
 
-    // ImageScale (resize)
     if (options.width !== undefined && options.height !== undefined) {
       if (imageScaleId && w[imageScaleId]) {
         w[imageScaleId].inputs.image = [lastNodeId, lastNodeOutput];
@@ -237,20 +262,9 @@ export class WorkflowLoader {
       this.removeNode(w, imageScaleId);
     }
 
-    // Wire SaveImage to end of chain
     if (saveImageId && w[saveImageId]) {
       w[saveImageId].inputs.images = [lastNodeId, lastNodeOutput];
     }
-
-    // Randomize seeds
-    if (this.randomizeSeeds) {
-      this.randomizeAllSeeds(w);
-    }
-
-    // Validate no dangling references
-    this.validateNoDanglingRefs(w);
-
-    return { workflow: w, mode };
   }
 
   /**
@@ -275,36 +289,67 @@ export class WorkflowLoader {
   }
 
   /**
-   * Inject prompts by tracing KSampler connections to CLIPTextEncode nodes
+   * Walk a node's positive/negative inputs back to the underlying
+   * CLIPTextEncode nodes. Follows one level of indirection (e.g.
+   * ReferenceLatent) so both the plain KSampler path and the
+   * ReferenceLatent → CFGGuider path of the edit workflow resolve.
    */
-  private injectPrompts(
+  private findCLIPTargetsFromKSampler(
     workflow: ComfyUIWorkflow,
     ksamplerId: string | null,
-    prompt: string,
-    negativePrompt?: string
-  ): void {
-    if (!ksamplerId || !workflow[ksamplerId]) return;
-
-    const sampler = workflow[ksamplerId];
-
-    // Positive prompt
-    const posConn = sampler.inputs.positive;
-    if (Array.isArray(posConn)) {
-      const posNodeId = String(posConn[0]);
-      if (workflow[posNodeId]?.class_type === 'CLIPTextEncode') {
-        workflow[posNodeId].inputs.text = prompt;
-      }
+  ): { clipPosId: string | null; clipNegId: string | null } {
+    if (!ksamplerId || !workflow[ksamplerId]) {
+      return { clipPosId: null, clipNegId: null };
     }
+    return {
+      clipPosId: this.resolveCLIPTextEncode(workflow, workflow[ksamplerId].inputs.positive),
+      clipNegId: this.resolveCLIPTextEncode(workflow, workflow[ksamplerId].inputs.negative),
+    };
+  }
 
-    // Negative prompt
-    if (negativePrompt) {
-      const negConn = sampler.inputs.negative;
-      if (Array.isArray(negConn)) {
-        const negNodeId = String(negConn[0]);
-        if (workflow[negNodeId]?.class_type === 'CLIPTextEncode') {
-          workflow[negNodeId].inputs.text = negativePrompt;
-        }
-      }
+  private findCLIPTargetsFromCFGGuider(
+    workflow: ComfyUIWorkflow,
+    cfgGuiderId: string,
+  ): { clipPosId: string | null; clipNegId: string | null } {
+    const guider = workflow[cfgGuiderId];
+    return {
+      clipPosId: this.resolveCLIPTextEncode(workflow, guider.inputs.positive),
+      clipNegId: this.resolveCLIPTextEncode(workflow, guider.inputs.negative),
+    };
+  }
+
+  /**
+   * Follow a conditioning input back to a CLIPTextEncode node. Handles one
+   * level of indirection through ReferenceLatent (conditioning input).
+   */
+  private resolveCLIPTextEncode(
+    workflow: ComfyUIWorkflow,
+    connection: unknown,
+  ): string | null {
+    if (!Array.isArray(connection) || connection.length < 2) return null;
+    const nodeId = String(connection[0]);
+    const node = workflow[nodeId];
+    if (!node) return null;
+
+    if (node.class_type === 'CLIPTextEncode') {
+      return nodeId;
+    }
+    if (node.class_type === 'ReferenceLatent') {
+      return this.resolveCLIPTextEncode(workflow, node.inputs.conditioning);
+    }
+    return null;
+  }
+
+  private injectPromptsAtCLIPTargets(
+    workflow: ComfyUIWorkflow,
+    targets: { clipPosId: string | null; clipNegId: string | null },
+    options: GenerateOptions,
+  ): void {
+    if (targets.clipPosId && workflow[targets.clipPosId] && options.prompt) {
+      workflow[targets.clipPosId].inputs.text = options.prompt;
+    }
+    if (targets.clipNegId && workflow[targets.clipNegId] && options.negative_prompt) {
+      workflow[targets.clipNegId].inputs.text = options.negative_prompt;
     }
   }
 
@@ -365,6 +410,13 @@ export class WorkflowLoader {
   }
 
   /**
+   * Get the workflow filename that will be used for a given mode.
+   */
+  getWorkflowNameForMode(mode: Mode): string {
+    return mode === 'img2img' ? this.editWorkflow : this.defaultWorkflow;
+  }
+
+  /**
    * Clear workflow cache
    */
   clearCache(workflowName?: string): void {
@@ -376,13 +428,17 @@ export class WorkflowLoader {
   }
 
   /**
-   * Randomize all seed values in the workflow
+   * Randomize all seed values in the workflow. Covers both the `seed` input
+   * on KSampler-style nodes and the `noise_seed` input on RandomNoise.
    */
   private randomizeAllSeeds(workflow: ComfyUIWorkflow): void {
     for (const [nodeId, node] of Object.entries(workflow)) {
-      if (node.inputs && 'seed' in node.inputs) {
-        const randomSeed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
-        workflow[nodeId].inputs.seed = randomSeed;
+      if (!node.inputs) continue;
+      if ('seed' in node.inputs) {
+        workflow[nodeId].inputs.seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+      }
+      if ('noise_seed' in node.inputs) {
+        workflow[nodeId].inputs.noise_seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
       }
     }
   }
