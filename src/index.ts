@@ -59,8 +59,10 @@ server.tool(
   128×128 inputs will be upscaled before encoding.
 - post-process: Provide image_path without prompt → resize and/or remove background only
 
-Blocks until the image is ready (or fails/times out) and returns the image
-URLs directly in the tool result. No polling required from the caller.
+By default, returns immediately with a prompt_id and status 'queued'. Use
+comfyui_get_image to poll for completion and retrieve image URLs. Set
+wait: true to block until the image is ready (or fails/times out) and get
+image URLs directly in the response.
 
 Parameters:
 - prompt (string, optional): Text description of desired image
@@ -68,6 +70,7 @@ Parameters:
 - image_path (string, optional): Absolute path to input image (triggers img2img or post-process)
 - width/height (int, optional): Target output dimensions (triggers resize post-processing)
 - remove_background (boolean, optional): Remove background from output image
+- wait (boolean, optional, default false): Block until image is ready and return URLs directly
 
 Must provide at least prompt or image_path.`,
   GenerateImageInputSchema.shape,
@@ -93,7 +96,7 @@ Must provide at least prompt or image_path.`,
 
 server.tool(
   'comfyui_get_image',
-  'Retrieve image URLs for a previously queued job by prompt_id. Normally unnecessary because comfyui_generate_image already blocks and returns images directly — use this only for manual recovery or to inspect an older prompt_id.',
+  'Retrieve image URLs for a previously queued job by prompt_id. Use this to poll for completion after calling comfyui_generate_image (default non-blocking mode). Returns status (pending/executing/completed/failed/not_found) and image URLs when ready.',
   GetImageInputSchema.shape,
   { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   async (args) => {

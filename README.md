@@ -10,8 +10,8 @@ A Model Context Protocol (MCP) server that enables AI assistants to generate and
 This MCP server exposes **three powerful tools** with a unified architecture:
 
 **Image Generation & Processing:**
-- **`comfyui_generate_image`**: Unified tool supporting three modes (txt2img, img2img, post-process) with dynamic workflow node management. Returns immediately — the server pushes an MCP notification when the image is ready.
-- **`comfyui_get_image`**: Fallback tool to retrieve generated/processed images by their prompt ID (only needed when a client does not relay server notifications)
+- **`comfyui_generate_image`**: Unified tool supporting three modes (txt2img, img2img, post-process) with dynamic workflow node management. Returns immediately with a `prompt_id` by default; set `wait: true` to block until the image is ready.
+- **`comfyui_get_image`**: Retrieve generated/processed images by their prompt ID — use to poll for completion after a non-blocking `generate_image` call
 
 **Utilities:**
 - **`comfyui_get_request_history`**: View history of all requests with current status
@@ -124,6 +124,7 @@ The server now uses a **single unified tool** with three auto-detected modes:
 | `width` | number | No | All modes | Target output width in pixels |
 | `height` | number | No | All modes | Target output height in pixels |
 | `remove_background` | boolean | No | All modes | Remove background from output (default: false) |
+| `wait` | boolean | No | All modes | Block until image is ready and return URLs directly (default: false) |
 
 ### txt2img Mode
 
@@ -229,32 +230,41 @@ When `width` and `height` are provided for txt2img:
 
 ### Response
 
-`comfyui_generate_image` returns immediately. Do **not** poll — wait for the MCP notification.
+By default (`wait: false`), `comfyui_generate_image` returns immediately:
 
 ```typescript
 {
-  prompt_id: string;       // Unique ID for this generation request
-  number: number;          // Position in the queue
+  prompt_id: string;       // Unique ID — pass to comfyui_get_image to poll
   status: 'queued';
   mode: 'txt2img' | 'img2img' | 'post-process';
-  notification: {
-    enabled: true;
-    message: string;       // Human-readable reminder that a notification will follow
-  };
+  queue_position?: number; // Position in the ComfyUI queue
 }
 ```
 
-When the image is ready, failed, or timed out, the server pushes a `notifications/message` with the payload described in the [Notifications](#notifications) section above.
+Use `comfyui_get_image` with the returned `prompt_id` to poll for completion and retrieve image URLs.
+
+With `wait: true`, the tool blocks until the image is ready (or fails/times out) and returns:
+
+```typescript
+{
+  prompt_id: string;
+  status: 'completed';
+  mode: 'txt2img' | 'img2img' | 'post-process';
+  images: [{
+    filename: string;
+    subfolder: string;
+    type: string;
+    url: string;           // HTTP URL to fetch the image
+  }];
+  duration_ms: number;     // How long generation took
+}
+```
 
 ## Other Tools
 
 ### `comfyui_get_image`
 
-**Fallback tool.** Normally you should rely on the MCP notification pushed by `comfyui_generate_image` instead of calling this tool. Use it only when:
-- your MCP client does not relay server-initiated notifications, or
-- a notification was missed and you want to recover the result manually.
-
-Retrieves a generated image by its prompt ID.
+Retrieve image URLs for a previously queued generation by its prompt ID. This is the standard way to poll for completion after a non-blocking `comfyui_generate_image` call (the default). Also works for recovering results from older prompt IDs.
 
 **Input Schema:**
 ```typescript

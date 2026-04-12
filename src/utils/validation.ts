@@ -10,6 +10,7 @@ export const GenerateImageInputSchema = z.object({
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
   remove_background: z.boolean().optional(),
+  wait: z.boolean().optional().default(false),
 });
 
 export type GenerateImageInput = z.infer<typeof GenerateImageInputSchema>;

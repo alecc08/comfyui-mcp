@@ -12,31 +12,44 @@ import {
 } from '../utils/history.js';
 import { classifyHistoryEntry } from '../comfyui/status.js';
 
-export interface GenerateImageOutput {
-  prompt_id: string;
-  status: 'completed';
-  mode: Mode;
-  images: ImageData[];
-  duration_ms: number;
-}
+export type GenerateImageOutput =
+  | {
+      prompt_id: string;
+      status: 'completed';
+      mode: Mode;
+      images: ImageData[];
+      duration_ms: number;
+    }
+  | {
+      prompt_id: string;
+      status: 'queued';
+      mode: Mode;
+      queue_position?: number;
+    };
 
 export interface PollOptions {
   intervalMs: number;
   maxDurationMs: number;
 }
 
+interface SetupResult {
+  promptId: string;
+  mode: Mode;
+  historyEntry: RequestHistoryEntry;
+  startedAt: number;
+  queuePosition?: number;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function generateImage(
+async function setupGeneration(
   input: unknown,
   client: ComfyUIClient,
   workflowLoader: WorkflowLoader,
-  imageServer: ImageServer,
   requestHistory: RequestHistoryEntry[],
-  pollOptions: PollOptions,
-): Promise<GenerateImageOutput> {
+): Promise<{ setup: SetupResult; wait: boolean }> {
   const validatedInput = GenerateImageInputSchema.parse(input);
 
   if (!validatedInput.prompt && !validatedInput.image_path) {
@@ -90,6 +103,26 @@ export async function generateImage(
     queue_position: response.number,
     image_path: validatedInput.image_path,
   });
+
+  return {
+    setup: {
+      promptId,
+      mode,
+      historyEntry,
+      startedAt,
+      queuePosition: response.number,
+    },
+    wait: validatedInput.wait,
+  };
+}
+
+async function waitForCompletion(
+  setup: SetupResult,
+  client: ComfyUIClient,
+  imageServer: ImageServer,
+  pollOptions: PollOptions,
+): Promise<GenerateImageOutput> {
+  const { promptId, mode, historyEntry, startedAt } = setup;
 
   let sawExecuting = false;
   while (true) {
@@ -164,4 +197,26 @@ export async function generateImage(
       duration_ms: Date.now() - startedAt,
     };
   }
+}
+
+export async function generateImage(
+  input: unknown,
+  client: ComfyUIClient,
+  workflowLoader: WorkflowLoader,
+  imageServer: ImageServer,
+  requestHistory: RequestHistoryEntry[],
+  pollOptions: PollOptions,
+): Promise<GenerateImageOutput> {
+  const { setup, wait } = await setupGeneration(input, client, workflowLoader, requestHistory);
+
+  if (wait) {
+    return waitForCompletion(setup, client, imageServer, pollOptions);
+  }
+
+  return {
+    prompt_id: setup.promptId,
+    status: 'queued',
+    mode: setup.mode,
+    queue_position: setup.queuePosition,
+  };
 }
