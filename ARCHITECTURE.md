@@ -1,956 +1,391 @@
-# ComfyUI MCP Server - Architecture Design
+# ComfyUI MCP Server — Architecture
 
-## Table of Contents
+This document describes the design of the ComfyUI MCP server at a design-doc
+level. For operational details (commands, env vars, file layout) see
+`CLAUDE.md`; for end-user documentation see `README.md` and `SETUP.md`.
 
-1. [Overview](#overview)
-2. [System Architecture](#system-architecture)
-3. [Component Design](#component-design)
-4. [Data Flow](#data-flow)
-5. [API Specifications](#api-specifications)
-6. [Workflow Management](#workflow-management)
-7. [Error Handling](#error-handling)
-8. [Performance Considerations](#performance-considerations)
-9. [Security](#security)
-10. [Implementation Roadmap](#implementation-roadmap)
+## 1. Overview & Design Principles
 
-## Overview
+The ComfyUI MCP server bridges MCP-compatible AI assistants (Claude Desktop,
+Cline, Cursor, etc.) with a local [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
+instance. The server exposes three tools over MCP stdio transport:
 
-The ComfyUI MCP Server bridges the Model Context Protocol with ComfyUI's image generation capabilities, enabling AI assistants to generate and retrieve images through a standardized interface.
+- `comfyui_generate_image` — unified tool for text-to-image generation,
+  image-to-image editing, and post-processing (auto-detected from parameters).
+- `comfyui_get_image` — poll for the result of a queued job by `prompt_id`.
+- `comfyui_get_request_history` — paginated list of past requests with
+  current status.
 
-### Design Principles
+Design principles:
 
-- **Simplicity**: Three core functions - generate images, retrieve results, and view history
-- **User Control**: Users provide their own ComfyUI workflows
-- **Type Safety**: Full TypeScript implementation with strict typing
-- **Minimal State**: Request history stored in-memory for recovery and review
-- **Standards Compliance**: Strict adherence to MCP 2025-06-18 specification
+1. **One unified workflow, dynamic pruning.** A single `workflow.json` holds
+   every node used by every mode. At request time the workflow engine removes
+   unused nodes and rewires connections. There is no mode-specific workflow
+   file.
+2. **HTTP URLs, not base64.** Generated images are served by a built-in
+   Express proxy that fetches from ComfyUI on demand, caches to disk, and
+   hands the AI assistant a plain HTTP URL. No base64 payloads flow through
+   the MCP channel.
+3. **Non-blocking by default, blocking on request.** `generate_image` queues
+   the prompt and returns `{ prompt_id, status: 'queued' }` immediately.
+   Clients poll via `comfyui_get_image`. Setting `wait: true` makes the tool
+   block until the image is ready (or fails/times out) and return URLs in
+   the same response.
+4. **Fail soft at startup, strict at request time.** The server starts even
+   if ComfyUI is unreachable or the workflow file is missing — errors surface
+   when a tool is invoked, not during boot.
+5. **Type safety end-to-end.** All tool inputs are validated with Zod;
+   TypeScript strict mode is on throughout.
 
-## System Architecture
+## 2. System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    MCP Client (Claude Desktop)               │
-│                                                               │
-│  - Receives tool definitions                                 │
-│  - Executes generate_image / get_image / get_request_history│
-│  - Displays results to user                                  │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     │ JSON-RPC 2.0 over stdio
-                     │
-┌────────────────────▼────────────────────────────────────────┐
-│              ComfyUI MCP Server (Node.js)                    │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │           MCP Protocol Layer                         │    │
-│  │  - McpServer instance                                │    │
-│  │  - StdioServerTransport                              │    │
-│  │  - Tool registration and routing                     │    │
-│  │  - In-memory request history storage                 │    │
-│  └──────────────────┬──────────────────────────────────┘    │
-│                     │                                         │
-│  ┌──────────────────▼──────────────────────────────────┐    │
-│  │           Tool Implementation Layer                   │    │
-│  │                                                       │    │
-│  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐│    │
-│  │  │ generate_   │  │  get_image   │  │get_request_  ││    │
-│  │  │   image     │  │              │  │  history     ││    │
-│  │  │             │  │              │  │              ││    │
-│  │  │ - Validate  │  │ - Validate   │  │ - Retrieve   ││    │
-│  │  │ - Build     │  │ - Check      │  │   history    ││    │
-│  │  │ - Queue     │  │   history    │  │ - Update     ││    │
-│  │  │ - Record    │  │ - Fetch      │  │   status     ││    │
-│  │  │   history   │  │   images     │  │              ││    │
-│  │  └──────┬──────┘  └──────┬───────┘  └──────┬───────┘│    │
-│  └─────────┼────────────────┼──────────────────┼────────┘    │
-│            │                │                  │              │
-│  ┌─────────▼────────────────▼──────────────────▼─────────┐    │
-│  │          ComfyUI Client Layer                        │    │
-│  │                                                       │    │
-│  │  - HTTP client (fetch)                               │    │
-│  │  - WebSocket client (ws)                             │    │
-│  │  - Connection management                             │    │
-│  │  - Request/response handling                         │    │
-│  └──────────────────┬───────────────────────────────────┘    │
-│                     │                                         │
-│  ┌──────────────────▼───────────────────────────────────┐    │
-│  │          Workflow Loader Layer                        │    │
-│  │                                                       │    │
-│  │  - Load user-provided workflow JSON                  │    │
-│  │  - Inject prompt, negative_prompt, width, height     │    │
-│  │  - Intelligent KSampler-based parameter injection    │    │
-│  │  - Workflow validation                               │    │
-│  └───────────────────────────────────────────────────────┘    │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     │ HTTP REST API + WebSocket
-                     │
-┌────────────────────▼────────────────────────────────────────┐
-│                      ComfyUI Server                          │
-│                                                               │
-│  - Workflow execution engine                                 │
-│  - Model management                                          │
-│  - Queue management                                          │
-│  - Image generation                                          │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────┐   MCP stdio    ┌────────────────────────────────┐
+│   AI Assistant/LLM   │ ─────────────▶ │     ComfyUI MCP Server         │
+│ (Claude, GPT, etc.)  │ ◀───────────── │      (this package)            │
+└──────────────────────┘                │                                │
+                                        │  ┌──────────────────────────┐  │
+                                        │  │  MCP Protocol Layer      │  │
+                                        │  │  (src/index.ts)          │  │
+                                        │  └──────────┬───────────────┘  │
+                                        │             │                  │
+                                        │  ┌──────────▼───────────────┐  │
+                                        │  │  Tool Layer              │  │
+                                        │  │  generate_image          │  │
+                                        │  │  get_image               │  │
+                                        │  │  get_request_history     │  │
+                                        │  └──────┬────────────┬──────┘  │
+                                        │         │            │         │
+                                        │    ┌────▼────┐  ┌────▼──────┐  │
+                                        │    │Workflow │  │ ComfyUI   │  │
+                                        │    │ Loader  │  │ Client    │  │
+                                        │    └─────────┘  └────┬──────┘  │
+                                        │                      │         │
+                                        │    ┌─────────────────▼──────┐  │
+                                        │    │  HTTP Image Server     │  │
+                                        │    │  + Disk Image Cache    │  │
+                                        │    └─────────────────┬──────┘  │
+                                        └──────────────────────┼─────────┘
+                                                               │
+                                                               ▼
+                                                   ┌───────────────────────┐
+                                                   │  ComfyUI REST API     │
+                                                   │  (localhost:8188)     │
+                                                   └───────────────────────┘
+                                                               ▲
+                                        ┌──────────────────────┴─────────┐
+                                        │  HTTP GET from AI assistant    │
+                                        │  http://localhost:8190/images/…│
+                                        └────────────────────────────────┘
 ```
 
-## Component Design
+The AI assistant communicates over the MCP stdio channel for tool calls and
+over plain HTTP for image fetches. The server owns two processes worth of
+state: an MCP server (stdio) and an Express image proxy (TCP).
 
-### 1. MCP Protocol Layer
+## 3. Component Design
 
-**File**: `src/index.ts`
+### 3.1 MCP Protocol Layer (`src/index.ts`)
 
-**Responsibilities**:
-- Initialize MCP server with metadata
-- Configure stdio transport
-- Register tools with schemas (generate_image, get_image, get_request_history)
-- Route requests to tool handlers
-- Maintain in-memory request history array
-- Handle server lifecycle
+Entry point. Responsibilities:
 
-**Key Classes/Functions**:
+- Boot the MCP server using `@modelcontextprotocol/sdk` on stdio transport.
+- Register the three tools with their Zod-derived input schemas and
+  human-readable descriptions.
+- Construct and wire singletons: `ComfyUIClient`, `WorkflowLoader`,
+  `ImageServer`, and the in-memory request history array.
+- Start the HTTP image proxy on `COMFYUI_MCP_HTTP_PORT`.
 
-```typescript
-class MCPServer {
-  private server: McpServer;
-  private comfyClient: ComfyUIClient;
+Each tool handler is a thin wrapper that delegates to `src/tools/*.ts`,
+returns `content: [{ type: 'text', text: JSON.stringify(result) }]`, and
+converts thrown errors into MCP `isError: true` responses.
 
-  async initialize(): Promise<void>;
-  private registerTools(): void;
-  async start(): Promise<void>;
-}
-```
+### 3.2 Tool Layer (`src/tools/`)
 
-**Dependencies**:
-- `@modelcontextprotocol/sdk/server/mcp.js`
-- `@modelcontextprotocol/sdk/server/stdio.js`
-- `zod` for schema validation
+#### `generate-image.ts` — `comfyui_generate_image`
 
-### 2. Tool Implementation Layer
+Auto-detects mode from input:
 
-**Files**:
-- `src/tools/generate-image.ts`
-- `src/tools/get-image.ts`
-- `src/tools/get-request-history.ts`
+| `prompt` | `image_path` | Mode           |
+|----------|--------------|----------------|
+| yes      | no           | `txt2img`      |
+| yes      | yes          | `img2img`      |
+| no       | yes          | `post-process` |
+| no       | no           | error          |
 
-**Responsibilities**:
-- Validate input parameters using Zod schemas
-- Coordinate with ComfyUI client
-- Format responses according to MCP spec
-- Handle tool-specific errors
-- Track and retrieve request history
-
-#### `generate_image` Tool
-
-```typescript
-interface GenerateImageInput {
-  prompt: string;
-  negative_prompt?: string;
-  width?: number;
-  height?: number;
-  workflow_path?: string;  // Optional: override default workflow
-}
-
-interface GenerateImageOutput {
-  prompt_id: string;
-  number: number;
-  status: string;
-}
-
-async function generateImage(
-  input: GenerateImageInput,
-  client: ComfyUIClient,
-  workflowLoader: WorkflowLoader,
-  requestHistory: RequestHistoryEntry[]
-): Promise<GenerateImageOutput>;
-```
-
-**Input Validation**:
-- `prompt`: Non-empty string (required)
-- `negative_prompt`: String (optional)
-- `width/height`: Positive integers (default: 512)
-- `workflow_path`: Valid file path (optional)
-
-**Processing Steps**:
-1. Validate and sanitize input parameters (prompt and negative_prompt)
-2. Load workflow JSON from file (COMFYUI_WORKFLOW_PATH)
-3. Inject prompt, negative_prompt, width, height into appropriate nodes via KSampler connection tracing
-4. Generate client_id (random hex string)
-5. Queue modified workflow via POST /prompt
-6. Record request to in-memory history with timestamp
-7. Return prompt_id and queue position
-
-#### `get_image` Tool
-
-```typescript
-interface GetImageInput {
-  prompt_id: string;
-}
-
-interface GetImageOutput {
-  status: 'completed' | 'executing' | 'pending' | 'not_found';
-  images?: Array<{
-    filename: string;
-    subfolder: string;
-    type: string;
-    data: string; // base64
-  }>;
-  error?: string;
-}
-
-async function getImage(
-  input: GetImageInput,
-  client: ComfyUIClient
-): Promise<GetImageOutput>;
-```
-
-**Processing Steps**:
-1. Validate prompt_id format
-2. Check history via GET /history/{prompt_id}
-3. Parse execution status
-4. If completed, iterate through outputs
-5. Fetch each image via GET /view
-6. Encode as base64
-7. Return status and image data
-
-#### `get_request_history` Tool
-
-```typescript
-interface RequestHistoryEntry {
-  prompt_id: string;
-  prompt: string;
-  negative_prompt?: string;
-  width: number;
-  height: number;
-  timestamp: string;
-  status: 'queued' | 'executing' | 'completed' | 'failed' | 'unknown';
-  queue_position?: number;
-}
-
-interface GetRequestHistoryOutput {
-  history: RequestHistoryEntry[];
-  total_requests: number;
-}
-
-async function getRequestHistory(
-  requestHistory: RequestHistoryEntry[],
-  client: ComfyUIClient
-): Promise<GetRequestHistoryOutput>;
-```
-
-**Processing Steps**:
-1. Retrieve in-memory request history array
-2. For each entry, query ComfyUI GET /history/{prompt_id} to get current status
-3. Update status field based on ComfyUI response
-4. Return complete history with updated statuses and total count
-
-**Use Cases**:
-- Recover lost prompt IDs after context loss
-- Review all past image generation requests
-- Check status of multiple requests at once
-- Audit request history for debugging
-
-**Note**: History is stored in-memory only and will be cleared on server restart.
-
-### 3. ComfyUI Client Layer
-
-**File**: `src/comfyui/client.ts`
-
-**Responsibilities**:
-- Maintain connection to ComfyUI instance
-- Provide typed API methods
-- Handle HTTP requests and WebSocket events
-- Manage retries and timeouts
-
-**Class Design**:
-
-```typescript
-class ComfyUIClient {
-  private baseUrl: string;
-  private ws: WebSocket | null;
-
-  constructor(baseUrl: string);
-
-  // Connection management
-  async connect(): Promise<void>;
-  async disconnect(): Promise<void>;
-  async healthCheck(): Promise<boolean>;
-
-  // Prompt queue operations
-  async queuePrompt(
-    workflow: ComfyUIWorkflow,
-    clientId: string
-  ): Promise<QueuePromptResponse>;
-
-  // History operations
-  async getHistory(promptId: string): Promise<HistoryResponse>;
-  async getHistory(): Promise<HistoryResponse>;
-  async clearHistory(): Promise<void>;
-
-  // Image operations
-  async getImage(
-    filename: string,
-    subfolder: string,
-    type: string
-  ): Promise<Buffer>;
-
-  // WebSocket operations
-  private setupWebSocket(): void;
-  async waitForCompletion(
-    promptId: string,
-    timeout?: number
-  ): Promise<ExecutionResult>;
-}
-```
-
-**API Method Details**:
-
-##### `queuePrompt(workflow, clientId)`
-- **Endpoint**: POST /prompt
-- **Payload**: `{ prompt: workflow, client_id: clientId }`
-- **Response**: `{ prompt_id: string, number: number }`
-- **Errors**: Validation errors, network errors
-
-##### `getHistory(promptId?)`
-- **Endpoint**: GET /history or GET /history/{prompt_id}
-- **Response**: Object mapping prompt_id to execution data
-- **Errors**: Not found, network errors
-
-##### `getImage(filename, subfolder, type)`
-- **Endpoint**: GET /view?filename={}&subfolder={}&type={}
-- **Response**: Binary image data
-- **Errors**: Not found, network errors
-
-##### WebSocket Events
-- **Connected**: On `open`, send client_id
-- **Status Update**: `{ type: 'status', data: { status, sid } }`
-- **Execution Start**: `{ type: 'execution_start', data: { prompt_id } }`
-- **Executing**: `{ type: 'executing', data: { node, prompt_id } }`
-- **Progress**: `{ type: 'progress', data: { value, max } }`
-- **Executed**: `{ type: 'executed', data: { node, output } }`
-
-### 4. Workflow Loader Layer
-
-**File**: `src/workflows/workflow-loader.ts`
-
-**Responsibilities**:
-- Load user-provided workflow JSON from filesystem
-- Detect and inject parameters into appropriate nodes
-- Validate workflow structure before submission
-- Support multiple workflow file paths
-
-**Class Design**:
-
-```typescript
-interface ComfyUIWorkflow {
-  [nodeId: string]: WorkflowNode;
-}
-
-interface WorkflowNode {
-  class_type: string;
-  inputs: Record<string, any>;
-}
-
-class WorkflowLoader {
-  private workflowPath: string;
-
-  constructor(workflowPath: string);
-
-  async loadWorkflow(): Promise<ComfyUIWorkflow>;
-
-  injectParameters(
-    workflow: ComfyUIWorkflow,
-    params: {
-      prompt?: string;
-      negative_prompt?: string;
-      width?: number;
-      height?: number;
-    }
-  ): ComfyUIWorkflow;
-
-  private findNodeByType(
-    workflow: ComfyUIWorkflow,
-    classType: string
-  ): string | null;
-
-  private validate(workflow: ComfyUIWorkflow): boolean;
-}
-```
-
-**Parameter Injection Strategy**:
-
-The loader uses an intelligent connection-based approach to inject parameters:
-
-1. **Positive/Negative Prompt Injection**:
-   - Finds the `KSampler` node in the workflow
-   - Follows its `positive` connection (array reference) to locate the positive prompt `CLIPTextEncode` node
-   - Follows its `negative` connection (array reference) to locate the negative prompt `CLIPTextEncode` node
-   - Injects `prompt` into the positive node's `inputs.text` field
-   - Injects `negative_prompt` into the negative node's `inputs.text` field (if provided)
-   - **Fallback**: If no KSampler found, uses first `CLIPTextEncode` node for positive prompt
-
-2. **Dimensions Injection**:
-   - Searches for `EmptyLatentImage` (SD1.5/SDXL) or `EmptySD3LatentImage` (SD3) nodes
-   - Updates `inputs.width` and `inputs.height` fields
-
-This approach correctly handles workflows with both positive and negative prompts by tracing the actual node graph connections rather than making assumptions about node order or naming.
-
-**Example User Workflow** (exported from ComfyUI):
-
-```json
-{
-  "3": {
-    "class_type": "KSampler",
-    "inputs": {
-      "seed": 156680208700286,
-      "steps": 20,
-      "cfg": 8.0,
-      "sampler_name": "euler",
-      "scheduler": "normal",
-      "denoise": 1.0,
-      "model": ["4", 0],
-      "positive": ["6", 0],
-      "negative": ["7", 0],
-      "latent_image": ["5", 0]
-    }
-  },
-  "5": {
-    "class_type": "EmptyLatentImage",
-    "inputs": {
-      "width": 512,    // ← Injected by server
-      "height": 512,   // ← Injected by server
-      "batch_size": 1
-    }
-  },
-  "6": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "text": "",      // ← Injected by server (positive prompt)
-      "clip": ["4", 1]
-    }
-  },
-  "7": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "text": "",      // ← Injected by server (negative prompt)
-      "clip": ["4", 1]
-    }
-  }
-}
-```
-
-### 5. Configuration Layer
-
-**File**: `src/config/config.ts`
-
-```typescript
-interface Config {
-  comfyui: {
-    baseUrl: string;
-    timeout: number;
-    retries: number;
-  };
-  defaults: {
-    model: string;
-    width: number;
-    height: number;
-    steps: number;
-    cfgScale: number;
-    sampler: string;
-    scheduler: string;
-    negativePrompt: string;
-  };
-  mcp: {
-    name: string;
-    version: string;
-  };
-}
-
-function loadConfig(): Config;
-```
-
-**Environment Variables**:
-- `COMFYUI_URL`: Base URL (default: http://127.0.0.1:8188)
-- `COMFYUI_WORKFLOW_PATH`: Path to workflow JSON file
-
-## Data Flow
-
-### Image Generation Flow
+Input schema (Zod, see `src/utils/validation.ts`):
 
 ```
-1. User Request
-   └─> "Generate an image of a sunset"
-
-2. MCP Client (Claude Desktop)
-   └─> Calls generate_image tool
-       Input: { prompt: "sunset", negative_prompt: "dark, night", width: 1024, height: 768 }
-
-3. MCP Server - Tool Handler
-   └─> Validates input with Zod schema
-   └─> Sanitizes prompt and negative_prompt
-   └─> Generates client_id: "hex-string-1234"
-
-4. Workflow Loader
-   └─> Loads user workflow from file
-   └─> Finds KSampler node
-   └─> Follows positive/negative connections to CLIPTextEncode nodes
-   └─> Injects prompt, negative_prompt, width, height
-   └─> Returns modified workflow object
-
-5. ComfyUI Client
-   └─> POST /prompt
-       Payload: { prompt: workflow, client_id: "hex-string-1234" }
-   └─> Response: { prompt_id: "abc123", number: 1 }
-
-6. MCP Server - Tool Handler
-   └─> Records request to in-memory history array:
-       {
-         prompt_id: "abc123",
-         prompt: "sunset",
-         negative_prompt: "dark, night",
-         width: 1024,
-         height: 768,
-         timestamp: "2025-01-15T10:30:00.000Z",
-         status: "queued",
-         queue_position: 1
-       }
-   └─> Returns to MCP client
-       Output: { prompt_id: "abc123", number: 1, status: "queued" }
-
-7. MCP Client
-   └─> Displays to user: "Image queued as abc123"
+prompt?            string
+negative_prompt?   string
+image_path?        string (absolute path)
+width?             positive int
+height?            positive int
+remove_background? boolean
+wait?              boolean (default false)
 ```
 
-### Image Retrieval Flow
-
-```
-1. User Request
-   └─> "Get the image we just generated"
-
-2. MCP Client (Claude Desktop)
-   └─> Calls get_image tool
-       Input: { prompt_id: "abc123" }
-
-3. MCP Server - Tool Handler
-   └─> Validates prompt_id format
-
-4. ComfyUI Client
-   └─> GET /history/abc123
-   └─> Response: {
-         "abc123": {
-           "status": { "completed": true },
-           "outputs": {
-             "9": { "images": [
-               { "filename": "ComfyUI_00001_.png", "subfolder": "", "type": "output" }
-             ]}
-           }
-         }
-       }
-
-5. ComfyUI Client (Image Fetch)
-   └─> GET /view?filename=ComfyUI_00001_.png&subfolder=&type=output
-   └─> Response: Binary image data (PNG)
-
-6. MCP Server - Tool Handler
-   └─> Encodes image as base64
-   └─> Returns to MCP client
-       Output: {
-         status: "completed",
-         images: [{ filename: "...", data: "base64..." }]
-       }
-
-7. MCP Client
-   └─> Decodes and displays image to user
-```
-
-### Request History Retrieval Flow
-
-```
-1. User Request
-   └─> "Show me my recent image generations"
-
-2. MCP Client (Claude Desktop)
-   └─> Calls get_request_history tool
-       Input: {} (no parameters)
-
-3. MCP Server - Tool Handler
-   └─> Retrieves in-memory history array
-   └─> For each entry, queries ComfyUI:
-       GET /history/{prompt_id}
-
-4. ComfyUI Client
-   └─> Returns status for each prompt_id
-   └─> Updates entry.status based on ComfyUI response:
-       - "completed" if status.completed === true
-       - "failed" if status.status_str === "error"
-       - "executing" otherwise
-
-5. MCP Server - Tool Handler
-   └─> Returns to MCP client
-       Output: {
-         history: [
-           {
-             prompt_id: "abc123",
-             prompt: "sunset",
-             negative_prompt: "dark, night",
-             width: 1024,
-             height: 768,
-             timestamp: "2025-01-15T10:30:00.000Z",
-             status: "completed",
-             queue_position: 1
-           },
-           { ... more entries ... }
-         ],
-         total_requests: 2
-       }
-
-6. MCP Client
-   └─> Displays history table to user
-```
-
-## API Specifications
-
-### ComfyUI REST API
-
-#### POST /prompt
-```typescript
-Request:
-{
-  prompt: ComfyUIWorkflow;
-  client_id: string;
-}
-
-Response (Success):
-{
-  prompt_id: string;
-  number: number;
-}
-
-Response (Error):
-{
-  error: string;
-  node_errors: Record<string, any>;
-}
-```
-
-#### GET /history/{prompt_id}
-```typescript
-Response:
-{
-  [prompt_id: string]: {
-    prompt: Array<number, ComfyUIWorkflow>;
-    outputs: {
-      [node_id: string]: {
-        images?: Array<{
-          filename: string;
-          subfolder: string;
-          type: string;
-        }>;
-      };
-    };
-    status: {
-      status_str: string;
-      completed: boolean;
-      messages: Array<any>;
-    };
-  };
-}
-```
-
-#### GET /view
-```typescript
-Query Parameters:
-  filename: string;
-  subfolder: string;
-  type: 'output' | 'input' | 'temp';
-
-Response:
-  Binary image data (image/png, image/jpeg, etc.)
-```
-
-#### WebSocket /ws
-```typescript
-Message Types:
-
-{ type: 'status', data: { status: { exec_info: { queue_remaining: number } } } }
-{ type: 'execution_start', data: { prompt_id: string } }
-{ type: 'executing', data: { node: string | null, prompt_id: string } }
-{ type: 'progress', data: { value: number, max: number } }
-{ type: 'executed', data: { node: string, output: any, prompt_id: string } }
-```
-
-## Workflow Management
-
-### User-Provided Workflows
-
-Users export their workflows from ComfyUI using "Save (API Format)" which produces a JSON file containing all nodes and connections.
-
-**Example Workflow Path**: `./workflow.json` or `/path/to/my-workflow.json`
-
-The server loads this file at runtime and modifies it before submission to ComfyUI.
-
-### Parameter Injection
-
-The server performs simple parameter injection by searching for known node types:
-
-| Node Type | Field | Injected Parameter |
-|-----------|-------|-------------------|
-| `CLIPTextEncode` | `inputs.text` | User's prompt |
-| `EmptyLatentImage` | `inputs.width` | User's width |
-| `EmptyLatentImage` | `inputs.height` | User's height |
-
-**Injection Algorithm**:
-1. Parse workflow JSON
-2. Iterate through all nodes
-3. Find first node matching target class_type
-4. Update the appropriate input field
-5. Return modified workflow
-
-### Workflow Validation
-
-Basic validation before submission:
-
-1. **File Exists**: Workflow path points to valid JSON file
-2. **Valid JSON**: File can be parsed as JSON
-3. **Has Nodes**: JSON contains at least one node
-4. **Node Structure**: Each node has `class_type` and `inputs`
-
-## Error Handling
-
-### Error Categories
-
-1. **Validation Errors**: Invalid input parameters
-   - Status: 400
-   - Example: "Width must be divisible by 8"
-
-2. **Connection Errors**: Cannot reach ComfyUI
-   - Status: 503
-   - Example: "ComfyUI server unavailable"
-
-3. **Execution Errors**: ComfyUI workflow failed
-   - Status: 500
-   - Example: "Model not found: xyz.safetensors"
-
-4. **Not Found Errors**: Resource doesn't exist
-   - Status: 404
-   - Example: "Prompt ID not found"
-
-### Error Response Format
-
-```typescript
-interface ErrorResponse {
-  error: {
-    code: string;
-    message: string;
-    details?: any;
-  };
-}
-```
-
-### Retry Strategy
-
-- **Connection Errors**: Exponential backoff (3 retries)
-- **Timeout Errors**: Single retry with increased timeout
-- **Validation Errors**: No retry (immediate failure)
-- **Execution Errors**: No retry (user must fix workflow)
-
-## Performance Considerations
-
-### Caching
-
-- **Workflow File**: Loaded once at startup, cached in memory
-- **Connection Pooling**: Reuse HTTP connections to ComfyUI
-- **WebSocket**: Single persistent connection per server instance (optional)
-
-### Timeouts
-
-- **HTTP Requests**: 30 seconds default
-- **Image Generation**: 5 minutes (configurable)
-- **Image Retrieval**: 10 seconds
-- **WebSocket**: Infinite (with heartbeat)
-
-### Resource Limits
-
-- **Max Concurrent Requests**: 10 (configurable)
-- **Max Image Size**: Limited by ComfyUI (typically 2048x2048 for SD 1.5)
-- **Max Queue Depth**: Managed by ComfyUI
-
-### Memory Management
-
-- **Streaming Images**: Use streams for large images (>10MB)
-- **Buffer Limits**: 50MB max per image response
-- **WebSocket Buffer**: 1MB max message size
-
-## Security
-
-### Threat Model
-
-1. **Malicious Prompts**: XSS via prompt injection
-   - Mitigation: Sanitize prompts, no HTML rendering
-
-2. **Path Traversal**: Access arbitrary files via filename
-   - Mitigation: Validate filename format, no path separators
-
-3. **Resource Exhaustion**: Queue flooding
-   - Mitigation: Rate limiting (future), queue depth limits
-
-4. **SSRF**: Access internal services via ComfyUI URL
-   - Mitigation: Validate URL is localhost/127.0.0.1
-
-### Input Sanitization
-
-```typescript
-function sanitizePrompt(prompt: string): string {
-  // Remove control characters
-  // Limit length to 10000 chars
-  // Remove potentially dangerous strings
-  return prompt.trim().slice(0, 10000);
-}
-
-function validateFilename(filename: string): boolean {
-  // Must match: alphanumeric, dots, dashes, underscores only
-  // No path separators (/, \)
-  return /^[a-zA-Z0-9._-]+$/.test(filename);
-}
-```
-
-### ComfyUI URL Validation
-
-```typescript
-function validateComfyUIUrl(url: string): boolean {
-  const parsed = new URL(url);
-  const allowedHosts = ['127.0.0.1', 'localhost', '::1'];
-  return allowedHosts.includes(parsed.hostname);
-}
-```
-
-## Implementation Roadmap
-
-### Phase 1: Core Functionality (MVP)
-**Goal**: Basic image generation and retrieval
-
-**Tasks**:
-1. Project setup (package.json, tsconfig.json)
-2. MCP server initialization with stdio transport
-3. ComfyUI client implementation (HTTP only)
-4. Workflow loader (load JSON, inject parameters)
-5. `generate_image` tool implementation
-6. `get_image` tool implementation
-7. Configuration management (env vars)
-8. Error handling basics
-9. Build and packaging for npm
-
-**Duration**: 2-3 days
-
-### Phase 2: Testing & Polish
-**Goal**: Production-ready reliability
-
-**Tasks**:
-1. Unit tests for workflow loader
-2. Integration tests with mock ComfyUI
-3. Error handling and validation
-4. Documentation finalization
-5. Example workflow file
-
-**Duration**: 1-2 days
-
-## Technology Stack
-
-### Core Dependencies
-
-```json
-{
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.19.1",
-    "zod": "^3.22.4",
-    "uuid": "^9.0.1"
-  },
-  "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/uuid": "^9.0.7",
-    "typescript": "^5.3.3",
-    "tsx": "^4.7.0"
-  }
-}
-```
-
-### Node.js Version
-
-- **Minimum**: 18.0.0 (LTS)
-- **Recommended**: 20.x or 22.x (Active LTS)
-- **Engine Constraint**: `"node": ">=18.0.0"`
-
-### Build Tools
-
-- **TypeScript**: 5.3+ with strict mode
-- **Build**: `tsc` for compilation
-- **Runtime**: `node` with ES modules
-- **Package Manager**: npm (for npx compatibility)
-
-## File Structure
-
-```
-comfyui-mcp/
-├── src/
-│   ├── index.ts                    # Entry point, MCP server setup
-│   ├── config/
-│   │   └── config.ts               # Configuration management
-│   ├── comfyui/
-│   │   ├── client.ts               # ComfyUI API client
-│   │   └── types.ts                # ComfyUI type definitions
-│   ├── workflows/
-│   │   └── workflow-loader.ts      # Load and inject parameters into workflows
-│   ├── tools/
-│   │   ├── generate-image.ts       # generate_image tool
-│   │   ├── get-image.ts            # get_image tool
-│   │   └── get-request-history.ts  # get_request_history tool
-│   └── utils/
-│       └── validation.ts           # Input validation helpers
-├── dist/                           # Compiled output
-├── package.json
-├── tsconfig.json
-├── README.md
-├── ARCHITECTURE.md                 # This file
-└── LICENSE
-```
-
-## Testing Strategy
-
-### Manual Testing
-
-**Checklist**:
-- [ ] Test with real ComfyUI instance
-- [ ] Test with Claude Desktop
-- [ ] Test with MCP Inspector
-- [ ] Test various image sizes and prompts
-- [ ] Test workflow file loading
-- [ ] Test parameter injection
-- [ ] Test error scenarios (invalid workflow, connection refused)
-
-## Deployment
-
-### NPM Package
-
-**Package Name**: `comfyui-mcp-server`
-
-**Publishing**:
-```bash
-npm run build
-npm version patch/minor/major
-npm publish
-```
-
-**Installation**:
-```bash
-npx comfyui-mcp-server
-```
-
-
-## References
-
-- [MCP Specification 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18)
-- [ComfyUI Documentation](https://docs.comfy.org)
-- [ComfyUI Server Routes](https://docs.comfy.org/development/comfyui-server/comms_routes)
-- [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)
-- [ComfyUI Examples](https://github.com/comfyanonymous/ComfyUI_examples)
+Flow:
+
+1. Validate input, detect mode.
+2. If `image_path` is set, upload the file to ComfyUI via `/upload/image`.
+3. Call `WorkflowLoader.prepareWorkflow(mode, params)` to obtain a pruned,
+   rewired workflow.
+4. `POST /prompt` to ComfyUI; capture the returned `prompt_id`.
+5. Record an entry in the in-memory request history.
+6. If `wait: false` (default): return
+   `{ prompt_id, status: 'queued', mode, queue_position? }`.
+7. If `wait: true`: poll `GET /history/{prompt_id}` every
+   `COMFYUI_POLL_INTERVAL_MS`, up to `GENERATION_TIMEOUT_MS` (~15 min).
+   Return `{ prompt_id, status: 'completed', mode, images, duration_ms }`
+   on success; throw on failure or timeout.
+
+#### `get-image.ts` — `comfyui_get_image`
+
+Primary polling tool for the non-blocking path. Given a `prompt_id`:
+
+1. Check the live `/queue` endpoint for pending/executing items.
+2. Check `/history/{prompt_id}` for completion metadata.
+3. Return one of: `pending`, `executing`, `completed` (with `images[]` of
+   HTTP URLs), `failed` (with `error`), or `not_found`.
+
+#### `get-request-history.ts` — `comfyui_get_request_history`
+
+Paginated read of the in-memory history (no persistence across restarts).
+Takes `limit` (≤100, default 50) and `offset` (default 0). For each entry,
+queries ComfyUI for current status so the response reflects reality rather
+than just the stored state at queue time.
+
+### 3.3 HTTP Image Server + Cache (`src/http/`)
+
+`image-server.ts` — Express app with three routes:
+
+- `GET /images/:prompt_id/:filename?subfolder=X&type=Y` — fetch an image
+  from ComfyUI's `/view` endpoint on cache miss, stream bytes to the
+  caller while writing to the disk cache.
+- `GET /health` — liveness probe.
+- `DELETE /cache` — wipe the image cache (debugging aid).
+
+`image-cache.ts` — disk-backed cache rooted at `COMFYUI_IMAGE_CACHE_DIR`
+(default `~/.cache/comfyui-mcp`). The cache is content-addressed by
+`(prompt_id, filename, subfolder, type)`.
+
+Why a proxy instead of raw `/view` links? Two reasons:
+
+1. The AI assistant may run on a different machine than ComfyUI; the MCP
+   process is the only component guaranteed to reach both.
+2. Caching avoids re-fetching the same image across repeated `get_image`
+   calls and across assistant sessions.
+
+### 3.4 ComfyUI Client (`src/comfyui/client.ts`)
+
+Plain `fetch`-based HTTP client. No WebSocket dependency. Methods:
+
+- `queuePrompt(workflow)` — `POST /prompt` with `{prompt, client_id}`.
+- `uploadImage(filePath)` — `POST /upload/image` multipart.
+- `getQueue()` — `GET /queue`.
+- `getHistory(promptId)` — `GET /history/{id}`.
+- `getImage(...)` — used by the image server to stream from `/view`.
+
+A shared history-entry classifier lives in `src/comfyui/status.ts` and maps
+raw history payloads to one of `executing`, `error`, `completed`.
+
+### 3.5 Workflow Engine (`src/workflows/workflow-loader.ts`)
+
+Single source of workflow truth. Loads `workflow.json` once, then for each
+request calls `prepareWorkflow(mode, params)` to produce a per-request
+pruned graph.
+
+**Target model.** The bundled workflow is wired for **FLUX.2 [klein] 4B**:
+
+- `flux-2-klein-base-4b.safetensors` (UNETLoader)
+- `qwen_3_4b.safetensors` (CLIPLoader, type `flux2`)
+- `flux2-vae.safetensors` (VAELoader)
+
+`scripts/setup-comfyui.sh` downloads all three from the
+`Comfy-Org/flux2-klein-4B` HuggingFace repo and installs `ComfyUI-RMBG`.
+
+**Full node set.**
+
+- Model loading: `UNETLoader`, `CLIPLoader`, `VAELoader`
+- txt2img path: `EmptyFlux2LatentImage` → `KSampler`
+- img2img path: `LoadImage` → `VAEEncode` → `KSampler`
+  (Flux 2 Klein edit: `ReferenceLatent` + `CFGGuider` preserves subject
+  identity natively — there is no denoise knob)
+- Core generation: `CLIPTextEncode` (pos/neg) → `KSampler` → `VAEDecode`
+- Post-processing: `RMBG` (background removal), `ImageScale` (resize)
+- Output: `SaveImage`
+
+**Pruning algorithm.**
+
+Step 1 — select input branch:
+
+- `txt2img`: remove `LoadImage`, `VAEEncode`. Point
+  `KSampler.latent_image` at `EmptyFlux2LatentImage`. Compute aspect-
+  ratio-aware generation dimensions (see §6.2).
+- `img2img`: remove `EmptyFlux2LatentImage`. Rewire
+  `KSampler.latent_image` to `VAEEncode`. Upload the input image and set
+  the `LoadImage` filename.
+- `post-process`: remove the entire generation pipeline (`KSampler`, both
+  `CLIPTextEncode` nodes, `VAEEncode`, `VAEDecode`, all model loaders).
+  Keep only `LoadImage` → post-processing → `SaveImage`.
+
+Step 2 — build post-processing chain starting from `VAEDecode` (generation
+modes) or `LoadImage` (post-process mode):
+
+1. If `remove_background`: keep `RMBG`, wire to `lastNode`. Else remove it.
+2. If `width`/`height` set: keep `ImageScale`, wire to `lastNode`, set
+   target dimensions. Else remove it.
+3. Wire `SaveImage` to the final `lastNode`.
+
+Step 3 — validation: scan remaining nodes for any `[nodeId, outputIdx]`
+reference whose target no longer exists. A dangling reference throws
+before the workflow is queued.
+
+**Prompt injection.** Trace `KSampler.positive` and `KSampler.negative`
+links to their `CLIPTextEncode` nodes and set `inputs.text`.
+
+**Seed randomization.** Scan every node for a `seed` input and replace it
+with a random 64-bit value. Disabled via `COMFYUI_RANDOMIZE_SEEDS=false`.
+
+### 3.6 Config Layer (`src/config/config.ts`)
+
+Reads environment variables at boot, applies defaults, and exposes a
+typed config object. Relevant settings:
+
+| Variable                   | Default                  | Purpose |
+|----------------------------|--------------------------|---------|
+| `COMFYUI_URL`              | `http://127.0.0.1:8188`  | Upstream ComfyUI base URL |
+| `COMFYUI_WORKFLOW_DIR`     | `<repo>/workflow_files`  | Where `workflow.json` lives |
+| `COMFYUI_MCP_HTTP_PORT`    | `8190`                   | Port for the built-in image proxy |
+| `COMFYUI_IMAGE_CACHE_DIR`  | `~/.cache/comfyui-mcp`   | Disk image cache root |
+| `COMFYUI_RANDOMIZE_SEEDS`  | `true`                   | Randomize `seed` inputs per request |
+| `COMFYUI_POLL_INTERVAL_MS` | `2000`                   | Interval between ComfyUI status checks while blocking in `wait: true` mode |
+
+## 4. Data Flow
+
+### 4.1 Text-to-image (`txt2img`)
+
+1. Assistant calls `comfyui_generate_image` with `prompt` (optionally
+   `width`, `height`, `remove_background`, `wait`).
+2. `WorkflowLoader.prepareWorkflow('txt2img', params)` prunes the graph
+   and computes generation dimensions.
+3. `ComfyUIClient.queuePrompt()` posts to `/prompt`.
+4. History entry recorded; `prompt_id` returned.
+5. If `wait: false`: response is `{ prompt_id, status: 'queued', mode,
+   queue_position? }`. Assistant polls `comfyui_get_image`.
+6. If `wait: true`: server polls `/history/{id}` every
+   `COMFYUI_POLL_INTERVAL_MS` until done or timeout, then returns
+   `{ prompt_id, status: 'completed', mode, images, duration_ms }`.
+
+### 4.2 Image-to-image (Flux 2 Klein edit)
+
+1. Assistant calls with `prompt` + `image_path` (+ optional sizing flags).
+2. Client uploads the image via `/upload/image`.
+3. Workflow pruned for `img2img`: `LoadImage` + `VAEEncode` kept,
+   `EmptyFlux2LatentImage` removed, `KSampler.latent_image` rewired.
+4. The Flux 2 Klein edit pattern (`ReferenceLatent` + `CFGGuider`) runs;
+   subject identity is preserved without a denoise parameter.
+5. Same queued-vs-completed response split as §4.1.
+
+### 4.3 Post-processing only
+
+1. Assistant calls with `image_path` (no `prompt`), plus any of `width`,
+   `height`, `remove_background`.
+2. Image uploaded; entire generation pipeline pruned from the workflow.
+3. Remaining chain: `LoadImage` → optional `RMBG` → optional `ImageScale`
+   → `SaveImage`.
+4. Same queued-vs-completed response split as §4.1.
+
+### 4.4 Image retrieval
+
+1. Assistant calls `comfyui_get_image(prompt_id)`.
+2. Tool checks `/queue` (pending/executing) and `/history/{id}`
+   (completed/failed).
+3. On completion, tool constructs image URLs of the form
+   `http://localhost:8190/images/{prompt_id}/{filename}?subfolder=…&type=…`.
+4. Assistant fetches those URLs over HTTP; image server serves from cache
+   or fetches from ComfyUI `/view` on a cache miss.
+
+## 5. API Specifications
+
+### 5.1 ComfyUI REST endpoints used
+
+| Method | Path                    | Purpose |
+|--------|-------------------------|---------|
+| POST   | `/prompt`               | Queue a workflow (`{prompt, client_id}`) |
+| POST   | `/upload/image`         | Upload an image (multipart/form-data) |
+| GET    | `/queue`                | List pending and running jobs |
+| GET    | `/history/{prompt_id}`  | Execution status + output metadata |
+| GET    | `/view`                 | Stream a generated image (`filename`, `subfolder`, `type`) |
+
+No WebSocket endpoints are used.
+
+### 5.2 Built-in HTTP image server
+
+| Method | Path                                   | Purpose |
+|--------|----------------------------------------|---------|
+| GET    | `/images/:prompt_id/:filename`         | Proxy an image (cached on first hit) |
+| GET    | `/health`                              | Liveness probe |
+| DELETE | `/cache`                               | Wipe the on-disk cache (debug only) |
+
+Query parameters on `/images/...`: `subfolder`, `type` (mirrors ComfyUI's
+`/view` contract).
+
+## 6. Workflow Management
+
+### 6.1 Single unified workflow
+
+Only one workflow file ships with the project: `workflow_files/workflow.json`.
+It must contain every node any mode could need. Exporting from ComfyUI
+uses the "Save (API Format)" button. Node additions that break the
+prepare-and-prune algorithm will be caught by the dangling-reference
+validator before the workflow hits ComfyUI.
+
+### 6.2 Aspect-ratio strategy for `txt2img`
+
+When `width` and `height` are given:
+
+1. `ratio = width / height`
+2. `genHeight = sqrt(1024² / ratio)`, `genWidth = ratio × genHeight`
+3. Round each to the nearest multiple of 64, clamp to `[512, 2048]`.
+4. Apply to `EmptyFlux2LatentImage`.
+5. `ImageScale` resizes the final output to the exact requested dimensions.
+
+Examples:
+
+- `1920×1080` → generate `1344×768` → resize `1920×1080`
+- `1080×1920` → generate `768×1344` → resize `1080×1920`
+- `1024×1024` → generate `1024×1024` (no resize needed)
+- `512×512` → generate `1024×1024` → resize `512×512`
+
+When neither is given: generate `1024×1024`, no resize.
+
+## 7. Error Handling & Timeouts
+
+- **Startup errors are non-fatal.** If ComfyUI is down or `workflow.json`
+  is missing, the MCP server still boots and registers tools. Errors
+  surface on the first tool call that needs the missing resource.
+- **Tool errors** are returned as MCP tool responses with `isError: true`
+  and a JSON `{ error: message }` payload. The assistant sees a normal
+  tool result, not a transport error.
+- **`wait: true` timeouts.** `GENERATION_TIMEOUT_MS` (~15 min, defined in
+  `src/utils/timeout.ts`) bounds how long the server will block. On
+  timeout the tool throws; the job may still complete in ComfyUI and
+  remain retrievable via `comfyui_get_image`.
+- **Dangling workflow references** throw synchronously during
+  `prepareWorkflow`, before the prompt is queued.
+- **Request history** is purely in-memory: a server restart drops it.
+  `comfyui_get_request_history` always re-queries ComfyUI for current
+  status so stale in-memory state cannot mislead the caller.
+
+## 8. Type Safety
+
+- Tool input shapes are defined once, as Zod schemas in
+  `src/utils/validation.ts` (`GenerateImageInputSchema`,
+  `GetImageInputSchema`, `GetRequestHistoryInputSchema`). TypeScript
+  types are inferred with `z.infer<…>`.
+- ComfyUI response shapes live in `src/comfyui/types.ts`.
+- TypeScript strict mode is enabled project-wide.
+- The MCP SDK's tool registration consumes the Zod `shape`, so input
+  validation and the advertised tool schema stay in lock-step.

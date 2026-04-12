@@ -16,15 +16,14 @@ This MCP server exposes **three powerful tools** with a unified architecture:
 **Utilities:**
 - **`comfyui_get_request_history`**: View history of all requests with current status
 
-The server communicates with a local ComfyUI instance via its REST API, handling workflow execution, image uploads, queue management, image retrieval, and push notifications when images finish rendering.
+The server communicates with a local ComfyUI instance via its REST API, handling workflow execution, image uploads, queue management, and image retrieval.
 
 ### Architecture
 
 ```mermaid
 graph TB
     A[AI Assistant/LLM<br/>Claude, GPT, etc.] <-->|MCP Protocol<br/>stdio| B[ComfyUI MCP Server<br/>This Package]
-    B -.->|MCP Notification<br/>when image ready| A
-    B <-->|HTTP API + Poll Loop| C[ComfyUI Instance<br/>localhost:8188]
+    B <-->|HTTP API| C[ComfyUI Instance<br/>localhost:8188]
     B -->|Cache to Disk| E[Image Cache<br/>~/.cache/comfyui-mcp]
     B <-->|HTTP Server<br/>localhost:8190| F[HTTP Image Proxy<br/>Built-in]
     F -->|Serve Images| E
@@ -36,36 +35,9 @@ graph TB
 1. Your AI assistant (Claude Desktop, Cline, etc.) sends an image generation request via MCP
 2. The server loads the unified workflow.json and **dynamically removes/rewires nodes** based on the requested mode
 3. Each request is stored in memory with prompt details, dimensions, mode, and timestamp
-4. The tool returns immediately with a `prompt_id`; the MCP server polls ComfyUI at a configurable interval in the background
-5. When ComfyUI reports the job as complete (or failed/timed out), the server **pushes an MCP notification** to the agent with the image URLs and status
-6. The server returns HTTP URLs (via built-in proxy server) instead of base64; your AI assistant fetches images directly via HTTP for efficient transfer
-7. View request history anytime to recover lost prompt IDs or review past generations
-
-### Notifications
-
-Because the MCP server polls ComfyUI internally and pushes completion notifications, **the AI agent does not need to poll `comfyui_get_image`**. After calling `comfyui_generate_image` the agent can continue with other work (or simply wait) and will receive a `notifications/message` log notification when the image is ready.
-
-Notification payload (sent via the MCP `logging` capability):
-
-```jsonc
-{
-  "level": "info",               // "error" on failure/timeout
-  "logger": "comfyui",
-  "data": {
-    "event": "image_ready",      // or "image_failed" | "image_timeout"
-    "prompt_id": "…",
-    "mode": "txt2img",           // or "img2img" | "post-process"
-    "status": "completed",       // or "failed"
-    "images": [                  // present when event === "image_ready"
-      { "filename": "…", "subfolder": "…", "type": "…", "url": "http://localhost:8190/images/…" }
-    ],
-    "error_message": "…",        // present on failure/timeout
-    "duration_ms": 12345
-  }
-}
-```
-
-`comfyui_get_image` remains available as a **fallback** for MCP clients that don't relay server-initiated notifications, or for manual recovery if a notification is missed.
+4. By default the tool returns immediately with a `prompt_id`; the agent polls `comfyui_get_image` for completion. Pass `wait: true` to block until the image is ready and get URLs back directly.
+5. The server returns HTTP URLs (via built-in proxy server) instead of base64; your AI assistant fetches images directly via HTTP for efficient transfer
+6. View request history anytime to recover lost prompt IDs or review past generations
 
 ## Features
 
@@ -83,14 +55,14 @@ Notification payload (sent via the MCP `logging` capability):
 - 📐 **Aspect-Ratio-Aware Generation**: For txt2img with dimensions, generates at ~1M pixels then resizes
 
 **Efficient Image Delivery:**
-- 🔔 **Push Notifications on Completion**: The MCP server polls ComfyUI and notifies the AI agent via `notifications/message` when images are ready — no polling required by the agent
+- ⏱️ **Blocking or Non-Blocking**: Default returns immediately with a `prompt_id` (agent polls `comfyui_get_image`); pass `wait: true` to block until the image is ready and get URLs directly
 - 🎲 **Seed Randomization**: Automatically randomizes seeds for varied batch results (configurable)
 - 🖼️ **Efficient Image Delivery**: Built-in HTTP proxy server for fast transfer via URLs (no base64 overhead)
 - 💾 **Disk-based Caching**: Images cached locally for instant repeated access
 
 **Smart Parameter Injection:**
 - ⚙️ **Text-to-Image**: Inject prompt, negative prompt, width, height with aspect-ratio-aware generation
-- 🔧 **Image Processing**: Inject image paths, denoise strength, resize dimensions, background removal
+- 🔧 **Image Processing**: Inject image paths, resize dimensions, background removal
 - 🧠 **Connection-Based Tracing**: Intelligently traces workflow node connections for accurate injection
 
 **Tracking & History:**
@@ -120,7 +92,6 @@ The server now uses a **single unified tool** with three auto-detected modes:
 | `prompt` | string | No (at least one of prompt/image_path) | txt2img, img2img | Text description of desired image |
 | `negative_prompt` | string | No | txt2img, img2img | What to avoid in the image |
 | `image_path` | string | No (at least one of prompt/image_path) | img2img, post-process | Absolute path to input image |
-| `denoise_strength` | number (0-1) | No | img2img | How much to change input image (default: 0.75) |
 | `width` | number | No | All modes | Target output width in pixels |
 | `height` | number | No | All modes | Target output height in pixels |
 | `remove_background` | boolean | No | All modes | Remove background from output (default: false) |
@@ -160,12 +131,14 @@ Generate an image from a text prompt.
 
 Transform an existing image using AI guidance.
 
+The Flux 2 Klein edit workflow preserves character/subject identity natively
+(via ReferenceLatent + CFGGuider), so there is no denoise knob to tune.
+
 **Example:**
 ```typescript
 {
   prompt: "Transform into watercolor painting style",
-  image_path: "/home/user/photos/cat.jpg",
-  denoise_strength: 0.7
+  image_path: "/home/user/photos/cat.jpg"
 }
 ```
 
@@ -175,8 +148,7 @@ Transform an existing image using AI guidance.
   prompt: "Make this portrait look more professional",
   image_path: "/home/user/photos/portrait.jpg",
   width: 1024,
-  height: 1024,
-  denoise_strength: 0.5
+  height: 1024
 }
 ```
 
@@ -334,7 +306,6 @@ Retrieve the history of all image generation requests made through this server. 
     height: number;              // Image height
     mode: 'txt2img' | 'img2img' | 'post-process'
     remove_background?: boolean; // If true, background was removed
-    denoise_strength?: number;   // If provided, img2img denoise strength
     timestamp: string;           // ISO timestamp when request was made
     status: string;              // Current status: "queued", "executing", "completed", "failed"
   }];
@@ -367,7 +338,6 @@ Response: {
       prompt: "watercolor painting style",
       image_path: "/home/user/photos/cat.jpg",
       mode: "img2img",
-      denoise_strength: 0.7,
       timestamp: "2025-01-15T10:25:00.000Z",
       status: "completed"
     }
@@ -493,7 +463,7 @@ Edit your MCP client configuration file and add:
 | `COMFYUI_MCP_HTTP_PORT` | Port for the built-in HTTP image proxy server | `8190` |
 | `COMFYUI_IMAGE_CACHE_DIR` | Directory for caching downloaded images | `~/.cache/comfyui-mcp` |
 | `COMFYUI_RANDOMIZE_SEEDS` | Enable/disable automatic seed randomization for varied results | `true` (set to `false` to disable) |
-| `COMFYUI_POLL_INTERVAL_MS` | Interval (ms) the MCP server uses to poll ComfyUI for completion before sending a push notification | `2000` |
+| `COMFYUI_POLL_INTERVAL_MS` | Interval (ms) between ComfyUI completion checks while blocking in `wait: true` mode | `2000` |
 
 ### ComfyUI Setup
 
@@ -563,16 +533,12 @@ Transform an existing photo using AI:
 ```typescript
 {
   prompt: "Transform into a watercolor painting with soft edges",
-  image_path: "/home/user/photos/landscape.jpg",
-  denoise_strength: 0.7
+  image_path: "/home/user/photos/landscape.jpg"
 }
 ```
 
-**Denoise Strength Guide:**
-- `0.0-0.3`: Very subtle changes, preserves most of the original
-- `0.4-0.6`: Moderate changes, balanced between original and new
-- `0.7-0.9`: Significant changes, mostly new interpretation
-- `1.0`: Complete reimagining, minimal resemblance to original
+The Flux 2 Klein edit workflow preserves subject identity natively — no
+denoise slider required.
 
 ### Example 5: Image-to-Image with Custom Dimensions
 
@@ -583,8 +549,7 @@ Transform and resize in one call:
   prompt: "Make this photo look like an oil painting",
   image_path: "/home/user/photos/portrait.jpg",
   width: 768,
-  height: 1024,
-  denoise_strength: 0.5
+  height: 1024
 }
 ```
 
@@ -753,7 +718,6 @@ Error: Could not find suitable node for parameter injection
 ## Future Enhancements
 
 - [ ] Advanced parameter injection for custom node types
-- [ ] Progress streaming via MCP notifications
 - [ ] Workflow validation and compatibility checking
 - [ ] Batch image processing (multiple images at once)
 - [ ] Workflow configuration UI/helper tool

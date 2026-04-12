@@ -335,7 +335,7 @@ npm start
 | `COMFYUI_MCP_HTTP_PORT` | `8190` | Port for the HTTP image proxy server |
 | `COMFYUI_IMAGE_CACHE_DIR` | `~/.cache/comfyui-mcp` | Directory for caching downloaded images |
 | `COMFYUI_RANDOMIZE_SEEDS` | `true` | Enable/disable seed randomization |
-| `COMFYUI_POLL_INTERVAL_MS` | `2000` | Interval (ms) the MCP server uses to poll ComfyUI before pushing a completion notification to the AI agent |
+| `COMFYUI_POLL_INTERVAL_MS` | `2000` | Interval (ms) between ComfyUI completion checks while blocking in `wait: true` mode |
 
 ---
 
@@ -343,7 +343,7 @@ npm start
 
 Now let's verify everything works!
 
-> **Heads up:** After you call `comfyui_generate_image`, the MCP server polls ComfyUI in the background and pushes a notification to the AI agent when the image is ready. The agent does **not** need to manually poll `comfyui_get_image` — it will be told automatically when the result is available.
+> **Heads up:** By default `comfyui_generate_image` returns immediately with a `prompt_id` — the agent polls `comfyui_get_image` to retrieve results. Pass `wait: true` to block until the image is ready and get URLs back in a single call.
 
 ### 6.1 Test ComfyUI Connection
 
