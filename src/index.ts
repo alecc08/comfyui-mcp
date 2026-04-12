@@ -26,6 +26,7 @@ const comfyClient = new ComfyUIClient(config.comfyui.baseUrl);
 const workflowLoader = new WorkflowLoader(
   config.workflow.workspaceDir,
   config.workflow.defaultWorkflow,
+  config.workflow.editWorkflow,
   config.workflow.randomizeSeeds
 );
 
@@ -52,23 +53,38 @@ server.tool(
   'comfyui_generate_image',
   `Generate, modify, or post-process images using ComfyUI. Three modes (auto-detected):
 - txt2img: Provide prompt → generates image from text
-- img2img: Provide prompt + image_path → modifies existing image guided by prompt
+- img2img: Provide prompt + image_path → edits the reference image using Flux 2 Klein's
+  native edit pattern (ReferenceLatent + CFGGuider), which preserves character/subject
+  identity far better than classic denoise-based img2img. Best results at ~1MP references;
+  128×128 inputs will be upscaled before encoding.
 - post-process: Provide image_path without prompt → resize and/or remove background only
+
+By default, returns immediately with a prompt_id and status 'queued'. Use
+comfyui_get_image to poll for completion and retrieve image URLs. Set
+wait: true to block until the image is ready (or fails/times out) and get
+image URLs directly in the response.
 
 Parameters:
 - prompt (string, optional): Text description of desired image
 - negative_prompt (string, optional): What to avoid in the image
 - image_path (string, optional): Absolute path to input image (triggers img2img or post-process)
-- denoise_strength (number 0-1, optional): How much to change input image (img2img only, default 0.75)
 - width/height (int, optional): Target output dimensions (triggers resize post-processing)
 - remove_background (boolean, optional): Remove background from output image
+- wait (boolean, optional, default false): Block until image is ready and return URLs directly
 
 Must provide at least prompt or image_path.`,
   GenerateImageInputSchema.shape,
   { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   async (args) => {
     try {
-      const result = await generateImage(args, comfyClient, workflowLoader, requestHistory);
+      const result = await generateImage(
+        args,
+        comfyClient,
+        workflowLoader,
+        imageServer,
+        requestHistory,
+        config.polling,
+      );
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -80,7 +96,7 @@ Must provide at least prompt or image_path.`,
 
 server.tool(
   'comfyui_get_image',
-  'Poll for completion of a queued job and retrieve image URLs. If status is "pending" or "executing", wait at least 30 seconds before polling again — image generation takes time.',
+  'Retrieve image URLs for a previously queued job by prompt_id. Use this to poll for completion after calling comfyui_generate_image (default non-blocking mode). Returns status (pending/executing/completed/failed/not_found) and image URLs when ready.',
   GetImageInputSchema.shape,
   { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   async (args) => {
@@ -160,6 +176,7 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  console.error(`Generation poll interval: ${config.polling.intervalMs}ms`);
   console.error('ComfyUI MCP Server running on stdio');
 }
 

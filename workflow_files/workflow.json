@@ -3,12 +3,12 @@
     "inputs": {
       "seed": 827818446070511,
       "steps": 20,
-      "cfg": 2.5,
+      "cfg": 5.0,
       "sampler_name": "euler",
       "scheduler": "simple",
       "denoise": 1,
       "model": [
-        "66",
+        "37",
         0
       ],
       "positive": [
@@ -99,7 +99,7 @@
   },
   "37": {
     "inputs": {
-      "unet_name": "qwen_image_2512_fp8_e4m3fn.safetensors",
+      "unet_name": "flux-2-klein-base-4b.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -109,8 +109,8 @@
   },
   "38": {
     "inputs": {
-      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-      "type": "qwen_image",
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "flux2",
       "device": "default"
     },
     "class_type": "CLIPLoader",
@@ -120,7 +120,7 @@
   },
   "39": {
     "inputs": {
-      "vae_name": "qwen_image_vae.safetensors"
+      "vae_name": "flux2-vae.safetensors"
     },
     "class_type": "VAELoader",
     "_meta": {
@@ -133,9 +133,9 @@
       "height": 1024,
       "batch_size": 1
     },
-    "class_type": "EmptySD3LatentImage",
+    "class_type": "EmptyFlux2LatentImage",
     "_meta": {
-      "title": "EmptySD3LatentImage"
+      "title": "EmptyFlux2LatentImage"
     }
   },
   "60": {
@@ -149,19 +149,6 @@
     "class_type": "SaveImage",
     "_meta": {
       "title": "Save Image"
-    }
-  },
-  "66": {
-    "inputs": {
-      "shift": 3.1000000000000005,
-      "model": [
-        "37",
-        0
-      ]
-    },
-    "class_type": "ModelSamplingAuraFlow",
-    "_meta": {
-      "title": "ModelSamplingAuraFlow"
     }
   },
   "70": {

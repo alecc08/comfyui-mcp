@@ -2,8 +2,9 @@ import type { ComfyUIClient } from '../comfyui/client.js';
 import type { ImageData } from '../comfyui/types.js';
 import type { RequestHistoryEntry } from '../utils/history.js';
 import type { ImageServer } from '../http/image-server.js';
-import { GetImageInputSchema, validateFilename } from '../utils/validation.js';
+import { GetImageInputSchema } from '../utils/validation.js';
 import { isTimedOut } from '../utils/timeout.js';
+import { classifyHistoryEntry } from '../comfyui/status.js';
 
 export interface GetImageOutput {
   status: 'completed' | 'executing' | 'pending' | 'not_found' | 'failed';
@@ -93,64 +94,23 @@ export async function getImage(
     }
 
     const entry = history[promptId];
+    const state = classifyHistoryEntry(entry, promptId, imageServer);
 
-    // Check for failure status first
-    if (entry.status.status_str === 'error') {
-      // Extract error messages from status.messages if available
-      let errorMessage = 'Image generation failed';
-      if (entry.status.messages && Array.isArray(entry.status.messages)) {
-        const errorMessages = entry.status.messages
-          .map((msg: any) => {
-            if (typeof msg === 'string') return msg;
-            if (msg && typeof msg === 'object') return JSON.stringify(msg);
-            return String(msg);
-          })
-          .filter(Boolean);
-        if (errorMessages.length > 0) {
-          errorMessage = errorMessages.join('; ');
-        }
-      }
-
+    if (state.kind === 'error') {
       return {
         status: 'failed',
-        error: errorMessage,
+        error: state.errorMessage,
       };
     }
 
-    // Check completion status
-    if (!entry.status.completed) {
+    if (state.kind === 'executing') {
       return {
         status: 'executing',
         retry_after_seconds: 30,
       };
     }
 
-    // Extract images from outputs and build URLs
-    const images: ImageData[] = [];
-
-    for (const [nodeId, output] of Object.entries(entry.outputs)) {
-      if (output.images && Array.isArray(output.images)) {
-        for (const imageMetadata of output.images) {
-          // Validate filename to prevent path traversal
-          if (!validateFilename(imageMetadata.filename)) {
-            console.error(`Invalid filename: ${imageMetadata.filename}`);
-            continue;
-          }
-
-          // Build image URL using the image server
-          const imageUrl = imageServer.buildImageUrl(promptId, imageMetadata);
-
-          images.push({
-            filename: imageMetadata.filename,
-            subfolder: imageMetadata.subfolder,
-            type: imageMetadata.type,
-            url: imageUrl,
-          });
-        }
-      }
-    }
-
-    if (images.length === 0) {
+    if (state.images.length === 0) {
       return {
         status: 'completed',
         error: 'No images found in output',
@@ -159,7 +119,7 @@ export async function getImage(
 
     return {
       status: 'completed',
-      images,
+      images: state.images,
     };
   } catch (error) {
     return {

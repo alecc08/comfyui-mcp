@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import os from 'os';
+import { GENERATION_TIMEOUT_MS } from '../utils/timeout.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -12,6 +13,7 @@ export interface Config {
   workflow: {
     workspaceDir: string;
     defaultWorkflow: string;
+    editWorkflow: string;
     randomizeSeeds: boolean;
   };
   mcp: {
@@ -21,6 +23,10 @@ export interface Config {
   http: {
     port: number;
     cacheDir: string;
+  };
+  polling: {
+    intervalMs: number;
+    maxDurationMs: number;
   };
 }
 
@@ -35,6 +41,7 @@ export function loadConfig(): Config {
     workflow: {
       workspaceDir: process.env.COMFYUI_WORKFLOW_DIR || defaultWorkflowDir,
       defaultWorkflow: 'workflow.json',
+      editWorkflow: 'workflow_edit.json',
       randomizeSeeds: process.env.COMFYUI_RANDOMIZE_SEEDS !== 'false',
     },
     mcp: {
@@ -44,6 +51,10 @@ export function loadConfig(): Config {
     http: {
       port: parseInt(process.env.COMFYUI_MCP_HTTP_PORT || '8190', 10),
       cacheDir: process.env.COMFYUI_IMAGE_CACHE_DIR || resolve(os.homedir(), '.cache', 'comfyui-mcp'),
+    },
+    polling: {
+      intervalMs: parseInt(process.env.COMFYUI_POLL_INTERVAL_MS || '2000', 10),
+      maxDurationMs: GENERATION_TIMEOUT_MS,
     },
   };
 

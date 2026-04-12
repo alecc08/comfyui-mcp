@@ -10,39 +10,62 @@ A Model Context Protocol (MCP) server that enables AI assistants to generate and
 This MCP server exposes **three powerful tools** with a unified architecture:
 
 **Image Generation & Processing:**
-- **`comfyui_generate_image`**: Unified tool supporting three modes (txt2img, img2img, post-process) with dynamic workflow node management
-- **`comfyui_get_image`**: Retrieve generated/processed images by their prompt ID
+- **`comfyui_generate_image`**: Unified tool supporting three modes (txt2img, img2img, post-process) with dynamic workflow node management. Returns immediately with a `prompt_id` by default; set `wait: true` to block until the image is ready.
+- **`comfyui_get_image`**: Retrieve generated/processed images by their prompt ID — use to poll for completion after a non-blocking `generate_image` call
 
 **Utilities:**
 - **`comfyui_get_request_history`**: View history of all requests with current status
 
-The server communicates with a local ComfyUI instance via its REST API, handling workflow execution, image uploads, queue management, and image retrieval.
+The server communicates with a local ComfyUI instance via its REST API, handling workflow execution, image uploads, queue management, image retrieval, and push notifications when images finish rendering.
 
 ### Architecture
 
 ```mermaid
 graph TB
     A[AI Assistant/LLM<br/>Claude, GPT, etc.] <-->|MCP Protocol<br/>stdio| B[ComfyUI MCP Server<br/>This Package]
-    B <-->|HTTP API| C[ComfyUI Instance<br/>localhost:8188]
-    C -->|Image Data| B
-    B -->|Cache to Disk| E[Image Cache<br/>./image_cache/]
+    B -.->|MCP Notification<br/>when image ready| A
+    B <-->|HTTP API + Poll Loop| C[ComfyUI Instance<br/>localhost:8188]
+    B -->|Cache to Disk| E[Image Cache<br/>~/.cache/comfyui-mcp]
     B <-->|HTTP Server<br/>localhost:8190| F[HTTP Image Proxy<br/>Built-in]
     F -->|Serve Images| E
-    B -->|Image URLs| A
-    A -->|HTTP| D[Image Proxy :8190]
-    D -->|Fetch & Cache| C
-    B -->|Unified Workflow<br/>Dynamic Node Management| G[workflow.json<br/>Single Unified Workflow]
+    A -->|HTTP Fetch| F
+    B -->|Unified Workflow<br/>Dynamic Node Management| G[workflow.json]
 ```
 
 **How it works:**
-1. Your AI assistant (Claude Desktop, Cline, etc.) sends image generation requests via MCP
+1. Your AI assistant (Claude Desktop, Cline, etc.) sends an image generation request via MCP
 2. The server loads the unified workflow.json and **dynamically removes/rewires nodes** based on the requested mode
 3. Each request is stored in memory with prompt details, dimensions, mode, and timestamp
-4. ComfyUI generates the image using your local GPU/models
-5. The server fetches images from ComfyUI and caches them to disk
-6. The server returns HTTP URLs (via built-in proxy server) instead of base64
-7. Your AI assistant fetches images directly via HTTP for efficient transfer
-8. View request history anytime to recover lost prompt IDs or review past generations
+4. The tool returns immediately with a `prompt_id`; the MCP server polls ComfyUI at a configurable interval in the background
+5. When ComfyUI reports the job as complete (or failed/timed out), the server **pushes an MCP notification** to the agent with the image URLs and status
+6. The server returns HTTP URLs (via built-in proxy server) instead of base64; your AI assistant fetches images directly via HTTP for efficient transfer
+7. View request history anytime to recover lost prompt IDs or review past generations
+
+### Notifications
+
+Because the MCP server polls ComfyUI internally and pushes completion notifications, **the AI agent does not need to poll `comfyui_get_image`**. After calling `comfyui_generate_image` the agent can continue with other work (or simply wait) and will receive a `notifications/message` log notification when the image is ready.
+
+Notification payload (sent via the MCP `logging` capability):
+
+```jsonc
+{
+  "level": "info",               // "error" on failure/timeout
+  "logger": "comfyui",
+  "data": {
+    "event": "image_ready",      // or "image_failed" | "image_timeout"
+    "prompt_id": "…",
+    "mode": "txt2img",           // or "img2img" | "post-process"
+    "status": "completed",       // or "failed"
+    "images": [                  // present when event === "image_ready"
+      { "filename": "…", "subfolder": "…", "type": "…", "url": "http://localhost:8190/images/…" }
+    ],
+    "error_message": "…",        // present on failure/timeout
+    "duration_ms": 12345
+  }
+}
+```
+
+`comfyui_get_image` remains available as a **fallback** for MCP clients that don't relay server-initiated notifications, or for manual recovery if a notification is missed.
 
 ## Features
 
@@ -60,7 +83,7 @@ graph TB
 - 📐 **Aspect-Ratio-Aware Generation**: For txt2img with dimensions, generates at ~1M pixels then resizes
 
 **Efficient Image Delivery:**
-- ⚡ **Asynchronous Execution**: Queue workflows and retrieve results when ready
+- 🔔 **Push Notifications on Completion**: The MCP server polls ComfyUI and notifies the AI agent via `notifications/message` when images are ready — no polling required by the agent
 - 🎲 **Seed Randomization**: Automatically randomizes seeds for varied batch results (configurable)
 - 🖼️ **Efficient Image Delivery**: Built-in HTTP proxy server for fast transfer via URLs (no base64 overhead)
 - 💾 **Disk-based Caching**: Images cached locally for instant repeated access
@@ -101,6 +124,7 @@ The server now uses a **single unified tool** with three auto-detected modes:
 | `width` | number | No | All modes | Target output width in pixels |
 | `height` | number | No | All modes | Target output height in pixels |
 | `remove_background` | boolean | No | All modes | Remove background from output (default: false) |
+| `wait` | boolean | No | All modes | Block until image is ready and return URLs directly (default: false) |
 
 ### txt2img Mode
 
@@ -206,14 +230,33 @@ When `width` and `height` are provided for txt2img:
 
 ### Response
 
-All modes return the same format:
+By default (`wait: false`), `comfyui_generate_image` returns immediately:
 
 ```typescript
 {
-  prompt_id: string;       // Unique ID for this generation request
-  number: number;          // Position in the queue
-  status: string;          // "queued"
-  mode: 'txt2img' | 'img2img' | 'post-process'
+  prompt_id: string;       // Unique ID — pass to comfyui_get_image to poll
+  status: 'queued';
+  mode: 'txt2img' | 'img2img' | 'post-process';
+  queue_position?: number; // Position in the ComfyUI queue
+}
+```
+
+Use `comfyui_get_image` with the returned `prompt_id` to poll for completion and retrieve image URLs.
+
+With `wait: true`, the tool blocks until the image is ready (or fails/times out) and returns:
+
+```typescript
+{
+  prompt_id: string;
+  status: 'completed';
+  mode: 'txt2img' | 'img2img' | 'post-process';
+  images: [{
+    filename: string;
+    subfolder: string;
+    type: string;
+    url: string;           // HTTP URL to fetch the image
+  }];
+  duration_ms: number;     // How long generation took
 }
 ```
 
@@ -221,7 +264,7 @@ All modes return the same format:
 
 ### `comfyui_get_image`
 
-Retrieve a generated image by its prompt ID.
+Retrieve image URLs for a previously queued generation by its prompt ID. This is the standard way to poll for completion after a non-blocking `comfyui_generate_image` call (the default). Also works for recovering results from older prompt IDs.
 
 **Input Schema:**
 ```typescript
@@ -345,20 +388,27 @@ Response: {
 
 **Base ComfyUI Installation:**
 - ComfyUI with API enabled
-- At least one Stable Diffusion model (checkpoint) or split models (UNET + CLIP + VAE)
+- The bundled `workflow_files/workflow.json` is wired for **FLUX.2 [klein] 4B**
+  (base variant). You'll need:
+  - `flux-2-klein-base-4b.safetensors` in `ComfyUI/models/diffusion_models/`
+  - `qwen_3_4b.safetensors` in `ComfyUI/models/text_encoders/`
+  - `flux2-vae.safetensors` in `ComfyUI/models/vae/`
 
-**Your models should be in:** `ComfyUI/models/checkpoints/` or split models in their respective directories
+The easiest way to provision these is `npm run setup:comfyui -- /path/to/ComfyUI`
+from this repo — see the [Complete Setup Guide](SETUP.md) for details.
 
 ### Custom Nodes
 
-**No custom nodes required!** The unified workflow uses only built-in ComfyUI nodes:
+The unified workflow uses built-in ComfyUI nodes plus one custom node for
+background removal:
 - LoadImage, VAEEncode, VAEDecode
 - KSampler, CLIPTextEncode
-- EmptySD3LatentImage
-- RMBG (background removal)
+- EmptyFlux2LatentImage
 - ImageScale (resize)
 - SaveImage
-- Model loading nodes (UNETLoader, CLIPLoader, VAELoader, ModelSamplingAuraFlow)
+- Model loading nodes (UNETLoader, CLIPLoader, VAELoader)
+- **RMBG** (from [ComfyUI-RMBG](https://github.com/1038lab/ComfyUI-RMBG)) for
+  background removal — installed automatically by `npm run setup:comfyui`
 
 ### Background Removal
 
@@ -395,7 +445,11 @@ npm install
 npm run build
 ```
 
-4. **Configure your MCP client** (Claude Desktop, Cline, Cursor, etc.):
+4. **(Optional) Provision ComfyUI**: run `npm run setup:comfyui -- /path/to/ComfyUI`
+to install `ComfyUI-RMBG` and download the Qwen-Image model files the bundled
+workflow needs. Idempotent — skip files/nodes already present.
+
+5. **Configure your MCP client** (Claude Desktop, Cline, Cursor, etc.):
 
 Edit your MCP client configuration file and add:
 
@@ -426,7 +480,7 @@ Edit your MCP client configuration file and add:
 - **Cursor**: Settings → Composer → Model Context Protocol
 - **Other clients**: Refer to your client's MCP configuration documentation
 
-5. **Restart your MCP client**
+6. **Restart your MCP client**
 
 ## Configuration
 
@@ -439,6 +493,7 @@ Edit your MCP client configuration file and add:
 | `COMFYUI_MCP_HTTP_PORT` | Port for the built-in HTTP image proxy server | `8190` |
 | `COMFYUI_IMAGE_CACHE_DIR` | Directory for caching downloaded images | `~/.cache/comfyui-mcp` |
 | `COMFYUI_RANDOMIZE_SEEDS` | Enable/disable automatic seed randomization for varied results | `true` (set to `false` to disable) |
+| `COMFYUI_POLL_INTERVAL_MS` | Interval (ms) the MCP server uses to poll ComfyUI for completion before sending a push notification | `2000` |
 
 ### ComfyUI Setup
 
