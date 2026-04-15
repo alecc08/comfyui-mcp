@@ -7,14 +7,15 @@ A Model Context Protocol (MCP) server that enables AI assistants to generate and
 
 ## Overview
 
-This MCP server exposes **three powerful tools** with a unified architecture:
+This MCP server exposes **four tools** with a unified architecture:
 
 **Image Generation & Processing:**
-- **`comfyui_generate_image`**: Unified tool supporting three modes (txt2img, img2img, post-process) with dynamic workflow node management. Returns immediately with a `prompt_id` by default; set `wait: true` to block until the image is ready.
+- **`comfyui_generate_image`**: Unified tool supporting three modes (txt2img, img2img, post-process) with dynamic workflow node management and optional LoRA stacking (1–4 LoRAs). Returns immediately with a `prompt_id` by default; set `wait: true` to block until the image is ready.
 - **`comfyui_get_image`**: Retrieve generated/processed images by their prompt ID — use to poll for completion after a non-blocking `generate_image` call
 
 **Utilities:**
 - **`comfyui_get_request_history`**: View history of all requests with current status
+- **`comfyui_list_loras`**: List available LoRA filenames on the ComfyUI server (reads the `LoraLoader` enum)
 
 The server communicates with a local ComfyUI instance via its REST API, handling workflow execution, image uploads, queue management, and image retrieval.
 
@@ -95,6 +96,7 @@ The server now uses a **single unified tool** with three auto-detected modes:
 | `width` | number | No | All modes | Target output width in pixels |
 | `height` | number | No | All modes | Target output height in pixels |
 | `remove_background` | boolean | No | All modes | Remove background from output (default: false) |
+| `loras` | array | No | txt2img, img2img | LoRA stack (max 4). Each entry: `{ name, strength_model (-2..2, default 1.0), strength_clip? }`. Omit to use `COMFYUI_DEFAULT_LORAS`; pass `[]` to disable defaults. Use `comfyui_list_loras` to discover filenames. |
 | `wait` | boolean | No | All modes | Block until image is ready and return URLs directly (default: false) |
 
 ### txt2img Mode
@@ -126,6 +128,22 @@ Generate an image from a text prompt.
   remove_background: true
 }
 ```
+
+**With a LoRA stack:**
+```typescript
+{
+  prompt: "a red pixel cube on a black backdrop",
+  loras: [
+    { name: "PixelArtV3Flux.safetensors", strength_model: 0.9 }
+  ]
+}
+```
+
+LoRAs chain serially between the UNet/CLIP loaders and every downstream
+consumer. Drop `.safetensors` files into `<ComfyUI>/models/loras/` and call
+`comfyui_list_loras` to discover filenames. See SETUP.md → "Installing
+LoRAs" for sourcing guidance and Klein compatibility notes. LoRAs are
+ignored in post-process mode (no generation pipeline present).
 
 ### img2img Mode
 
@@ -464,6 +482,7 @@ Edit your MCP client configuration file and add:
 | `COMFYUI_IMAGE_CACHE_DIR` | Directory for caching downloaded images | `~/.cache/comfyui-mcp` |
 | `COMFYUI_RANDOMIZE_SEEDS` | Enable/disable automatic seed randomization for varied results | `true` (set to `false` to disable) |
 | `COMFYUI_POLL_INTERVAL_MS` | Interval (ms) between ComfyUI completion checks while blocking in `wait: true` mode | `2000` |
+| `COMFYUI_DEFAULT_LORAS` | Comma-separated `name:strength` pairs applied when a request omits `loras` (e.g. `pixel-art-flux.safetensors:0.8`). Pass `loras: []` in a request to override. | *(none)* |
 
 ### ComfyUI Setup
 

@@ -39,6 +39,7 @@ bind-mounts where models live outside the ComfyUI install tree):
 
 What this script does:
   * Clones ComfyUI-RMBG into <install>/custom_nodes/ (skipped if present)
+  * Ensures <models>/loras exists (for user-supplied LoRA .safetensors)
   * Downloads three FLUX.2 [klein] 4B model files into <models>/diffusion_models,
     <models>/text_encoders, <models>/vae (skipped per-file if already present
     and non-empty):
@@ -141,16 +142,24 @@ download_model() {
 }
 
 main() {
-  if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-    print_usage
-    exit 0
-  fi
+  local positional=()
+  for arg in "$@"; do
+    case "$arg" in
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      *)
+        positional+=("$arg")
+        ;;
+    esac
+  done
 
   require_bin git
   require_bin curl
 
   local comfy
-  if ! comfy="$(resolve_comfyui_path "${1:-}")"; then
+  if ! comfy="$(resolve_comfyui_path "${positional[0]:-}")"; then
     echo "error: could not locate a ComfyUI install." >&2
     echo >&2
     print_usage >&2
@@ -160,7 +169,7 @@ main() {
   validate_comfyui_path "$comfy"
 
   local models
-  models="$(resolve_models_path "$comfy" "${2:-}")"
+  models="$(resolve_models_path "$comfy" "${positional[1]:-}")"
 
   echo "Using ComfyUI at: $comfy"
   echo "Using models dir: $models"
@@ -173,10 +182,15 @@ main() {
   download_model "$CLIP_URL" "$models/text_encoders"    "$CLIP_FILE"
   download_model "$VAE_URL"  "$models/vae"              "$VAE_FILE"
 
+  mkdir -p "$models/loras"
+  echo "[ok] ensured LoRA dir: $models/loras"
+
   echo
   echo "Done. Next steps:"
   echo "  1. Restart ComfyUI so the new ComfyUI-RMBG custom node is loaded."
   echo "  2. The RMBG-2.0 weights will auto-download on first workflow run."
+  echo "  3. Drop any additional LoRA .safetensors into $models/loras/ —"
+  echo "     list them via the comfyui_list_loras MCP tool."
 }
 
 main "$@"

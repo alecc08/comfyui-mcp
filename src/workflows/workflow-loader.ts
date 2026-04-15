@@ -4,6 +4,12 @@ import type { ComfyUIWorkflow } from '../comfyui/types.js';
 
 export type Mode = 'txt2img' | 'img2img' | 'post-process';
 
+export interface LoraOption {
+  name: string;
+  strength_model: number;
+  strength_clip?: number;
+}
+
 export interface GenerateOptions {
   prompt?: string;
   negative_prompt?: string;
@@ -11,6 +17,7 @@ export interface GenerateOptions {
   width?: number;
   height?: number;
   remove_background?: boolean;
+  loras?: LoraOption[];
 }
 
 export interface PreparedWorkflow {
@@ -134,6 +141,8 @@ export class WorkflowLoader {
     } else {
       this.prepareDefaultWorkflow(w, options, mode);
     }
+
+    this.applyLoras(w, options);
 
     if (this.randomizeSeeds) {
       this.randomizeAllSeeds(w);
@@ -265,6 +274,77 @@ export class WorkflowLoader {
     if (saveImageId && w[saveImageId]) {
       w[saveImageId].inputs.images = [lastNodeId, lastNodeOutput];
     }
+  }
+
+  /**
+   * Inject a chain of LoraLoader nodes between the UNETLoader/CLIPLoader and
+   * their downstream consumers (KSampler/CFGGuider model inputs,
+   * CLIPTextEncode clip inputs). Skipped for post-process mode where both
+   * loaders have been stripped.
+   */
+  private applyLoras(w: ComfyUIWorkflow, options: GenerateOptions): void {
+    if (!options.loras || options.loras.length === 0) return;
+
+    const unetLoaderId = this.findNodeByType(w, 'UNETLoader');
+    const clipLoaderId = this.findNodeByType(w, 'CLIPLoader');
+    if (!unetLoaderId || !clipLoaderId) {
+      // post-process mode — no generation pipeline to inject into.
+      return;
+    }
+
+    const modelConsumers = this.findConsumers(w, unetLoaderId);
+    const clipConsumers = this.findConsumers(w, clipLoaderId);
+
+    const existingIds = Object.keys(w).map((id) => parseInt(id, 10)).filter((n) => !isNaN(n));
+    let nextId = (existingIds.length ? Math.max(...existingIds) : 0) + 1;
+
+    let prevModelRef: [string, number] = [unetLoaderId, 0];
+    let prevClipRef: [string, number] = [clipLoaderId, 0];
+
+    for (const lora of options.loras) {
+      const id = String(nextId++);
+      const strengthModel = lora.strength_model;
+      const strengthClip = lora.strength_clip ?? lora.strength_model;
+      w[id] = {
+        class_type: 'LoraLoader',
+        inputs: {
+          lora_name: lora.name,
+          strength_model: strengthModel,
+          strength_clip: strengthClip,
+          model: prevModelRef,
+          clip: prevClipRef,
+        },
+      };
+      prevModelRef = [id, 0];
+      prevClipRef = [id, 1];
+    }
+
+    for (const { nodeId, inputName } of modelConsumers) {
+      w[nodeId].inputs[inputName] = prevModelRef;
+    }
+    for (const { nodeId, inputName } of clipConsumers) {
+      w[nodeId].inputs[inputName] = prevClipRef;
+    }
+  }
+
+  /**
+   * Find all (nodeId, inputName) pairs whose input is `[loaderId, 0]`.
+   */
+  private findConsumers(
+    w: ComfyUIWorkflow,
+    loaderId: string,
+  ): Array<{ nodeId: string; inputName: string }> {
+    const consumers: Array<{ nodeId: string; inputName: string }> = [];
+    for (const [nodeId, node] of Object.entries(w)) {
+      if (nodeId === loaderId || !node.inputs) continue;
+      for (const [inputName, inputValue] of Object.entries(node.inputs)) {
+        if (Array.isArray(inputValue) && inputValue.length >= 2
+            && String(inputValue[0]) === loaderId && Number(inputValue[1]) === 0) {
+          consumers.push({ nodeId, inputName });
+        }
+      }
+    }
+    return consumers;
   }
 
   /**
