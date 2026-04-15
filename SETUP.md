@@ -135,9 +135,33 @@ COMFYUI_PATH=/path/to/ComfyUI npm run setup:comfyui
 
 The script is idempotent: files that already exist are skipped, so re-running
 is safe. It probes `$HOME/ComfyUI`, `$HOME/comfyui`, and `/opt/ComfyUI` if no
-path is supplied.
+path is supplied. It also ensures `<models>/loras/` exists so you can drop
+LoRA `.safetensors` files straight in.
 
 After it finishes, **restart ComfyUI** so the new custom node is loaded.
+
+### Installing LoRAs (optional)
+
+The `loras` parameter on `comfyui_generate_image` lets you stack up to 4 LoRAs
+per request. LoRAs are not bundled — source and drop in your own.
+
+- **Compatibility.** LoRAs must be **FLUX.2 Klein-compatible**
+  `.safetensors` files. FLUX.1-Dev LoRAs generally will not load — the UNet
+  architectures differ, and ComfyUI will reject mismatched weights at load
+  time.
+- **Where to look.** Search Hugging Face or Civitai filtered for FLUX.2 /
+  Klein. (No specific recommendation here; the ecosystem is young and
+  changing.)
+- **Install.** Drop the `.safetensors` file into
+  `<ComfyUI>/models/loras/`, then **restart ComfyUI** (or hit the refresh
+  button in the ComfyUI web UI) so `/object_info` picks it up.
+- **Verify.** Call the `comfyui_list_loras` MCP tool — the filename should
+  appear in the returned array.
+- **Use.** Pass via `loras` on each request, e.g.
+  `loras: [{ name: "mystyle.safetensors", strength_model: 0.8 }]`. To lock
+  a project-wide default, set `COMFYUI_DEFAULT_LORAS` in your MCP client
+  env (e.g. `COMFYUI_DEFAULT_LORAS=mystyle.safetensors:0.8`). Passing
+  `loras: []` explicitly overrides the default for a single request.
 
 ### Manual download
 

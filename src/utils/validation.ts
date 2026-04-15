@@ -3,6 +3,14 @@ import { z } from 'zod';
 /**
  * Schema for unified generate_image input
  */
+export const LoraSpecSchema = z.object({
+  name: z.string().min(1, 'LoRA name cannot be empty'),
+  strength_model: z.number().min(-2).max(2).optional().default(1.0),
+  strength_clip: z.number().min(-2).max(2).optional(),
+});
+
+export type LoraSpec = z.infer<typeof LoraSpecSchema>;
+
 export const GenerateImageInputSchema = z.object({
   prompt: z.string().min(1, 'Prompt cannot be empty').max(10000, 'Prompt too long').optional(),
   negative_prompt: z.string().max(10000, 'Negative prompt too long').optional(),
@@ -10,6 +18,7 @@ export const GenerateImageInputSchema = z.object({
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
   remove_background: z.boolean().optional(),
+  loras: z.array(LoraSpecSchema).max(4, 'At most 4 LoRAs per request').optional(),
   wait: z.boolean().optional().default(false),
 });
 

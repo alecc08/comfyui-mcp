@@ -238,9 +238,33 @@ modes) or `LoadImage` (post-process mode):
    target dimensions. Else remove it.
 3. Wire `SaveImage` to the final `lastNode`.
 
-Step 3 — validation: scan remaining nodes for any `[nodeId, outputIdx]`
+Step 3 — LoRA injection (`applyLoras`): if `options.loras` is non-empty and
+both `UNETLoader` + `CLIPLoader` are still present (i.e. not post-process
+mode), clone one `LoraLoader` node per entry with fresh IDs starting at
+`max(existing) + 1`. Chain them serially — each consumes the previous
+`(MODEL, CLIP)` pair — then rewire every existing consumer of
+`[UNETLoader, 0]` / `[CLIPLoader, 0]` to point at the terminal
+`LoraLoader` outputs 0 / 1 respectively. The consumer scan is generic
+over `class_type`, so the same code handles `KSampler.model`,
+`CFGGuider.model` (edit workflow), and both `CLIPTextEncode.clip`
+inputs. An empty/omitted `loras` array is a no-op, keeping no-LoRA
+requests bit-identical to pre-change.
+
+Step 4 — validation: scan remaining nodes for any `[nodeId, outputIdx]`
 reference whose target no longer exists. A dangling reference throws
 before the workflow is queued.
+
+**LoRA schema (input).** `loras: Array<{ name, strength_model?, strength_clip? }>`,
+max length 4, strengths clamped to `[-2, 2]`. `strength_clip` defaults to
+`strength_model`. `strength_model` itself defaults to `1.0`. Distinguish
+"omitted" (→ fall back to `COMFYUI_DEFAULT_LORAS`) from "explicit empty
+array" (→ no LoRAs, overrides defaults) in Zod by not applying a default.
+
+**LoRA discovery.** `comfyui_list_loras` calls
+`GET /object_info/LoraLoader` and returns the `lora_name` enum. The
+`generate_image` tool re-uses this endpoint to validate requested names
+before queuing and throws with a complete list of available filenames
+when one is missing.
 
 **Prompt injection.** Trace `KSampler.positive` and `KSampler.negative`
 links to their `CLIPTextEncode` nodes and set `inputs.text`.
@@ -260,6 +284,7 @@ typed config object. Relevant settings:
 | `COMFYUI_MCP_HTTP_PORT`    | `8190`                   | Port for the built-in image proxy |
 | `COMFYUI_IMAGE_CACHE_DIR`  | `~/.cache/comfyui-mcp`   | Disk image cache root |
 | `COMFYUI_RANDOMIZE_SEEDS`  | `true`                   | Randomize `seed` inputs per request |
+| `COMFYUI_DEFAULT_LORAS`    | *(none)*                 | Comma-separated `name:strength` LoRA defaults, applied when a request omits `loras`. |
 | `COMFYUI_POLL_INTERVAL_MS` | `2000`                   | Interval between ComfyUI status checks while blocking in `wait: true` mode |
 
 ## 4. Data Flow

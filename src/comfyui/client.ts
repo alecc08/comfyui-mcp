@@ -223,6 +223,28 @@ export class ComfyUIClient {
   }
 
   /**
+   * Fetch node-type metadata (e.g. LoraLoader enum of available names) from
+   * ComfyUI's /object_info endpoint.
+   */
+  async getObjectInfo(nodeType: string): Promise<any> {
+    const url = `${this.baseUrl}/object_info/${encodeURIComponent(nodeType)}`;
+    let response: Response;
+    try {
+      response = await fetch(url, { method: 'GET' });
+    } catch (error) {
+      throw new Error(`Failed to connect to ComfyUI at ${this.baseUrl}: ${(error as Error).message}`);
+    }
+    if (!response.ok) {
+      throw new Error(`Failed to fetch object_info/${nodeType}: ${response.status} ${response.statusText}`);
+    }
+    try {
+      return await response.json();
+    } catch (error) {
+      throw new Error(`Invalid JSON from object_info/${nodeType}: ${(error as Error).message}`);
+    }
+  }
+
+  /**
    * Check if ComfyUI server is reachable
    */
   async healthCheck(): Promise<boolean> {

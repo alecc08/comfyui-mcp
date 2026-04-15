@@ -28,6 +28,35 @@ export interface Config {
     intervalMs: number;
     maxDurationMs: number;
   };
+  lora: {
+    defaults: Array<{ name: string; strength_model: number; strength_clip?: number }>;
+  };
+}
+
+/**
+ * Parse `COMFYUI_DEFAULT_LORAS`: comma-separated `name:strength` pairs.
+ * Bad entries are skipped with a warning.
+ */
+function parseDefaultLoras(raw: string | undefined): Array<{ name: string; strength_model: number }> {
+  if (!raw) return [];
+  const out: Array<{ name: string; strength_model: number }> = [];
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const lastColon = trimmed.lastIndexOf(':');
+    if (lastColon < 0) {
+      out.push({ name: trimmed, strength_model: 1.0 });
+      continue;
+    }
+    const name = trimmed.slice(0, lastColon).trim();
+    const strength = parseFloat(trimmed.slice(lastColon + 1).trim());
+    if (!name || isNaN(strength)) {
+      console.error(`Ignoring malformed COMFYUI_DEFAULT_LORAS entry: "${trimmed}"`);
+      continue;
+    }
+    out.push({ name, strength_model: strength });
+  }
+  return out;
 }
 
 export function loadConfig(): Config {
@@ -55,6 +84,9 @@ export function loadConfig(): Config {
     polling: {
       intervalMs: parseInt(process.env.COMFYUI_POLL_INTERVAL_MS || '2000', 10),
       maxDurationMs: GENERATION_TIMEOUT_MS,
+    },
+    lora: {
+      defaults: parseDefaultLoras(process.env.COMFYUI_DEFAULT_LORAS),
     },
   };
 

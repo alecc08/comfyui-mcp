@@ -9,6 +9,7 @@ import { ImageServer } from './http/image-server.js';
 import { generateImage } from './tools/generate-image.js';
 import { getImage } from './tools/get-image.js';
 import { getRequestHistory } from './tools/get-request-history.js';
+import { listLoras } from './tools/list-loras.js';
 import { type RequestHistoryEntry } from './utils/history.js';
 import {
   GenerateImageInputSchema,
@@ -70,6 +71,9 @@ Parameters:
 - image_path (string, optional): Absolute path to input image (triggers img2img or post-process)
 - width/height (int, optional): Target output dimensions (triggers resize post-processing)
 - remove_background (boolean, optional): Remove background from output image
+- loras (array, optional, max 4): LoRA stack. Each entry: { name, strength_model (-2..2, default 1.0), strength_clip (optional, defaults to strength_model) }.
+    Omit to fall back to COMFYUI_DEFAULT_LORAS env (if set). Pass [] to explicitly disable defaults.
+    Use comfyui_list_loras to discover available names.
 - wait (boolean, optional, default false): Block until image is ready and return URLs directly
 
 Must provide at least prompt or image_path.`,
@@ -84,6 +88,7 @@ Must provide at least prompt or image_path.`,
         imageServer,
         requestHistory,
         config.polling,
+        config.lora.defaults,
       );
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (error) {
@@ -106,6 +111,23 @@ server.tool(
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Error in comfyui_get_image:', msg);
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
+    }
+  }
+);
+
+server.tool(
+  'comfyui_list_loras',
+  'List available LoRA files on the ComfyUI server (reads the LoraLoader node enum from /object_info). Returns { loras: string[] } of filenames you can pass to comfyui_generate_image via the `loras` parameter.',
+  {},
+  { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+  async () => {
+    try {
+      const result = await listLoras(comfyClient);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('Error in comfyui_list_loras:', msg);
       return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: msg }) }] };
     }
   }

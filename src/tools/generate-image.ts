@@ -4,7 +4,8 @@ import type { WorkflowLoader } from '../workflows/workflow-loader.js';
 import type { Mode } from '../workflows/workflow-loader.js';
 import type { ImageServer } from '../http/image-server.js';
 import type { ImageData } from '../comfyui/types.js';
-import { GenerateImageInputSchema, sanitizePrompt, isAbsolutePath } from '../utils/validation.js';
+import { GenerateImageInputSchema, sanitizePrompt, isAbsolutePath, type LoraSpec } from '../utils/validation.js';
+import { listLoras } from './list-loras.js';
 import {
   type RequestHistoryEntry,
   recordHistoryEntry,
@@ -49,11 +50,28 @@ async function setupGeneration(
   client: ComfyUIClient,
   workflowLoader: WorkflowLoader,
   requestHistory: RequestHistoryEntry[],
+  defaultLoras: LoraSpec[],
 ): Promise<{ setup: SetupResult; wait: boolean }> {
   const validatedInput = GenerateImageInputSchema.parse(input);
 
   if (!validatedInput.prompt && !validatedInput.image_path) {
     throw new Error('Must provide at least prompt or image_path');
+  }
+
+  // Distinguish "omitted" (use defaults) from "explicit []" (no LoRAs).
+  const effectiveLoras: LoraSpec[] = validatedInput.loras !== undefined
+    ? validatedInput.loras
+    : defaultLoras;
+
+  if (effectiveLoras.length > 0) {
+    const available = await listLoras(client).catch(() => ({ loras: [] as string[] }));
+    const availableSet = new Set(available.loras);
+    const missing = effectiveLoras.filter((l) => !availableSet.has(l.name)).map((l) => l.name);
+    if (missing.length > 0 && available.loras.length > 0) {
+      throw new Error(
+        `Unknown LoRA(s): ${missing.join(', ')}. Available: ${available.loras.join(', ') || '(none)'}`,
+      );
+    }
   }
 
   const sanitizedPrompt = validatedInput.prompt
@@ -81,6 +99,11 @@ async function setupGeneration(
     width: validatedInput.width,
     height: validatedInput.height,
     remove_background: validatedInput.remove_background,
+    loras: effectiveLoras.length > 0 ? effectiveLoras.map((l) => ({
+      name: l.name,
+      strength_model: l.strength_model,
+      strength_clip: l.strength_clip,
+    })) : undefined,
   };
   const detectedMode = workflowLoader.detectMode(options);
   const baseWorkflow = await workflowLoader.loadWorkflowForMode(detectedMode);
@@ -206,8 +229,9 @@ export async function generateImage(
   imageServer: ImageServer,
   requestHistory: RequestHistoryEntry[],
   pollOptions: PollOptions,
+  defaultLoras: LoraSpec[] = [],
 ): Promise<GenerateImageOutput> {
-  const { setup, wait } = await setupGeneration(input, client, workflowLoader, requestHistory);
+  const { setup, wait } = await setupGeneration(input, client, workflowLoader, requestHistory, defaultLoras);
 
   if (wait) {
     return waitForCompletion(setup, client, imageServer, pollOptions);
